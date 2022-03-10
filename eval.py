@@ -3,6 +3,8 @@ import os
 import re
 import sys
 
+sys.path.append("quranqa/code/")
+
 import requests
 import string
 import numpy as np
@@ -14,6 +16,11 @@ import torch
 from torch.utils.data import TensorDataset, DataLoader, RandomSampler, SequentialSampler
 from settings import gpu, epochs, max_seq_length, batch_size
 from data import create_squad_examples, create_inputs_targets
+from quranqa.code.quranqa22_eval import (
+    normalize_text,
+    remove_prefixes,
+    pRR_max_over_ground_truths,
+)
 
 with open("data/eval_ar.jsonl") as f:
     raw_eval_data = [json.loads(l) for l in f]
@@ -60,6 +67,8 @@ pred_start, pred_end = (
 
 answers = []
 ids = []
+prrs = []
+wrong_answers = []
 for idx, (start, end) in enumerate(zip(pred_start, pred_end)):
     test_sample = test_samples[idx]
     offsets = test_sample.context_token_to_char
@@ -73,12 +82,33 @@ for idx, (start, end) in enumerate(zip(pred_start, pred_end)):
         pred_ans = test_sample.context[pred_char_start : offsets[end][1]]
     else:
         pred_ans = test_sample.context[pred_char_start:]
+    prr = pRR_max_over_ground_truths(
+        [pred_ans], [[pred_char_start]], [{"text": test_sample.answer_text}]
+    )
     answers.append(pred_ans)
     ids.append(test_sample.question_id)
-    if pred_ans != test_sample.answer_text:
-        print("Q: " + test_sample.question)
-        print("A: " + pred_ans)
-        print("L: " + test_sample.answer_text)
+    prrs.append(prr)
+
+    if normalize_text(remove_prefixes(pred_ans)) != normalize_text(
+        remove_prefixes(test_sample.answer_text)
+    ):
+        wrong_answers.append(
+            {
+                "answer": pred_ans,
+                "question": test_sample.question,
+                "correct_answer": test_sample.answer_text,
+                "pRR": str(round(prr, 5)),
+            }
+        )
+
+wrong_answers = sorted(wrong_answers, key=lambda d: d["pRR"])
+
+for wrong_answer in wrong_answers:
+    print("pRR:", wrong_answer["pRR"])
+    print("Q:", wrong_answer["question"])
+    print("L:", wrong_answer["correct_answer"])
+    print("A:", wrong_answer["answer"])
+    print()
 
 with open("data/smash_run01.json", "w") as f:
     submission = {
