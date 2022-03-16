@@ -15,14 +15,26 @@ from transformers import BertTokenizer, BertForQuestionAnswering
 import torch
 from torch.utils.data import TensorDataset, DataLoader, RandomSampler, SequentialSampler
 from settings import gpu, epochs, max_seq_length, batch_size
-from data import create_squad_examples, create_inputs_targets
+from data_utils import create_squad_examples, create_inputs_targets
 from quranqa.code.quranqa22_eval import (
     normalize_text,
     remove_prefixes,
     pRR_max_over_ground_truths,
 )
+import argparse
+from utils import find_interrogatives, get_spans
+from itertools import groupby
 
-with open("data/eval_ar.jsonl") as f:
+parser = argparse.ArgumentParser(description="Evaluate the models.")
+parser.add_argument("--train", action="store_true")
+args = parser.parse_args()
+
+if args.train:
+    datafile = "data/train_ar.jsonl"
+else:
+    datafile = "data/eval_ar.jsonl"
+
+with open(datafile, "r") as f:
     raw_eval_data = [json.loads(l) for l in f]
 
 
@@ -48,74 +60,115 @@ validation_data_loader = DataLoader(
 
 # ============================================ TESTING =================================================================
 model = BertForQuestionAnswering.from_pretrained(model_name).to(device=gpu)
-model.load_state_dict(torch.load("checkpoints/weights_8.pth"))
+model.load_state_dict(torch.load("checkpoints/weights_16.pth"))
 model.eval()
 
-test_samples = create_squad_examples(raw_eval_data, "Creating test points", tokenizer)
-# TODO: Fix this!
-x_test, y_test = create_inputs_targets(test_samples)
-pred_start, pred_end = model(
-    torch.tensor(x_test[0], dtype=torch.int64, device=gpu),
-    torch.tensor(x_test[1], dtype=torch.float, device=gpu),
-    torch.tensor(x_test[2], dtype=torch.int64, device=gpu),
-    return_dict=False,
-)
-pred_start, pred_end = (
-    pred_start.detach().cpu().numpy(),
-    pred_end.detach().cpu().numpy(),
-)
-
 answers = []
+full_text_answers = []
 ids = []
 prrs = []
 wrong_answers = []
-for idx, (start, end) in enumerate(zip(pred_start, pred_end)):
-    test_sample = test_samples[idx]
-    offsets = test_sample.context_token_to_char
-    start = np.argmax(start)
-    end = np.argmax(end)
-    pred_ans = None
-    if start >= len(offsets):
-        continue
-    pred_char_start = offsets[start][0]
-    if end < len(offsets):
-        pred_ans = test_sample.context[pred_char_start : offsets[end][1]]
-    else:
-        pred_ans = test_sample.context[pred_char_start:]
-    prr = pRR_max_over_ground_truths(
-        [pred_ans], [[pred_char_start]], [{"text": test_sample.answer_text}]
+BATCH_SIZE = 16
+
+for i in range(0, len(raw_eval_data), BATCH_SIZE):
+    batch_data = raw_eval_data[i : i + BATCH_SIZE]
+    test_samples = create_squad_examples(
+        batch_data, f"Creating test points for batch #{i}", tokenizer
     )
-    answers.append(pred_ans)
-    ids.append(test_sample.question_id)
-    prrs.append(prr)
+    # TODO: Fix this!
+    x_test, y_test = create_inputs_targets(test_samples)
+    pred_start, pred_end = model(
+        torch.tensor(x_test[0], dtype=torch.int64, device=gpu),
+        torch.tensor(x_test[1], dtype=torch.float, device=gpu),
+        torch.tensor(x_test[2], dtype=torch.int64, device=gpu),
+        return_dict=False,
+    )
+    pred_start, pred_end = (
+        pred_start.detach().cpu().numpy(),
+        pred_end.detach().cpu().numpy(),
+    )
 
-    if normalize_text(remove_prefixes(pred_ans)) != normalize_text(
-        remove_prefixes(test_sample.answer_text)
-    ):
-        wrong_answers.append(
-            {
-                "answer": pred_ans,
-                "question": test_sample.question,
-                "correct_answer": test_sample.answer_text,
-                "pRR": str(round(prr, 5)),
-            }
+    for idx, (start, end) in enumerate(zip(pred_start, pred_end)):
+        test_sample = test_samples[idx]
+        try:
+            offsets = test_sample.context_token_to_char
+        except:
+            # TODO: This is a hack added by Amr!
+            # Investigate the reason for this!
+            offsets = []
+
+        # TODO: Complete these spans!
+        get_spans(start, end)
+
+        start = np.argmax(start)
+        end = np.argmax(end)
+
+        pred_ans = None
+        if start >= len(offsets):
+            pred_ans = test_sample.context
+        else:
+            pred_char_start = offsets[start][0]
+            if end < len(offsets):
+                pred_ans = test_sample.context[pred_char_start : offsets[end][1]]
+            else:
+                pred_ans = test_sample.context[pred_char_start:]
+        if not pred_ans:
+            pred_ans = test_sample.context
+        prr = pRR_max_over_ground_truths(
+            [pred_ans], [[pred_char_start]], [{"text": test_sample.answer_text}]
         )
+        answers.append(pred_ans)
+        ids.append(test_sample.question_id)
+        full_text_answers.append(test_sample.answer_text)
+        prrs.append(prr)
 
-wrong_answers = sorted(wrong_answers, key=lambda d: d["pRR"])
+        if normalize_text(remove_prefixes(pred_ans)) != normalize_text(
+            remove_prefixes(test_sample.answer_text)
+        ):
+            wrong_answers.append(
+                {
+                    "answer": pred_ans,
+                    "question": test_sample.question,
+                    "correct_answer": test_sample.answer_text,
+                    "pRR": round(prr, 5),
+                    "type": find_interrogatives(test_sample.question),
+                }
+            )
 
-for wrong_answer in wrong_answers:
-    print("pRR:", wrong_answer["pRR"])
-    print("Q:", wrong_answer["question"])
-    print("L:", wrong_answer["correct_answer"])
-    print("A:", wrong_answer["answer"])
-    print()
+wrong_answers = sorted(wrong_answers, key=lambda d: d["type"])
 
+for k, v in groupby(wrong_answers, key=lambda a: a["type"]):
+    typed_wrong_answers = sorted(list(v), key=lambda a: a["pRR"])
+    print(40 * "*")
+    print(k, len(typed_wrong_answers))
+    print(40 * "*")
+    print(
+        round(np.mean([a["pRR"] for a in typed_wrong_answers]), 2),
+        "±",
+        round(np.std([a["pRR"] for a in typed_wrong_answers]), 2),
+    )
+
+if True or input("Print questions? [y]/n: ") != "n":
+    for k, v in groupby(wrong_answers, key=lambda a: a["type"]):
+        typed_wrong_answers = sorted(list(v), key=lambda a: a["pRR"])
+        print(40 * "*")
+        print(k, len(typed_wrong_answers))
+        print(40 * "*")
+        for wrong_answer in typed_wrong_answers:
+            print("pRR:", wrong_answer["pRR"])
+            print("Q:", wrong_answer["question"])
+            print("L:", wrong_answer["correct_answer"])
+            print("A:", wrong_answer["answer"])
+            print(wrong_answer["type"])
+            print()
+
+print(len(answers), len(full_text_answers), len(ids))
 with open("data/smash_run01.json", "w") as f:
     submission = {
         id: [
             {"answer": answer, "rank": 1, "score": 0.99},
-            {"answer": test_sample.answer_text, "rank": 2, "score": 0.01},
+            {"answer": full_answer, "rank": 2, "score": 0.01},
         ]
-        for id, answer, test_sample in zip(ids, answers, test_samples)
+        for id, answer, full_answer in zip(ids, answers, full_text_answers)
     }
     json.dump(submission, f, ensure_ascii=False)
