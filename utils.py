@@ -1,6 +1,9 @@
 from scipy.special import softmax
 
-INTERROGATIVE_ARTICLES = "لماذا كيف بأي بماذا من كم كيف ما ماذا هل اين متى".split()
+INTERROGATIVE_ARTICLES = "لماذا كيف بأي بماذا من كم كيف ما ماذا هل اين متى".split() + [
+    "من هو",
+    "من الذي",
+]
 
 
 def find_interrogatives(question):
