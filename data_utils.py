@@ -12,7 +12,19 @@ from tqdm import tqdm
 from transformers import BertTokenizer, BertForQuestionAnswering
 import torch
 from torch.utils.data import TensorDataset, DataLoader, RandomSampler, SequentialSampler
-from settings import gpu, epochs, max_seq_length, batch_size
+from settings import MAX_SEQ_LENGTH
+
+def download_dataset():
+    train_data_file = "https://gitlab.com/bigirqu/quranqa/-/raw/main/datasets/qrcd_v1.1_train.jsonl?inline=false"
+    dev_data_file = "https://gitlab.com/bigirqu/quranqa/-/raw/main/datasets/qrcd_v1.1_dev.jsonl?inline=false"
+    train_data = requests.get(train_data_file)
+    if train_data.status_code in (200,):
+        with open("data/train_ar.jsonl", "wb") as train_file:
+            train_file.write(train_data.content)
+    eval_data = requests.get(dev_data_file)
+    if eval_data.status_code in (200,):
+        with open("data/eval_ar.jsonl", "wb") as eval_file:
+            eval_file.write(eval_data.content)
 
 
 class Sample:
@@ -67,7 +79,7 @@ class Sample:
             tokenized_question.ids[1:]
         )
         attention_mask = [1] * len(input_ids)
-        padding_length = max_seq_length - len(input_ids)
+        padding_length = MAX_SEQ_LENGTH - len(input_ids)
         if padding_length > 0:
             input_ids = input_ids + ([0] * padding_length)
             attention_mask = attention_mask + ([0] * padding_length)

@@ -1,6 +1,6 @@
 import torch
 
-gpu = torch.device("cuda:3")
-max_seq_length = 384
-batch_size = 16
-epochs = 8
+GPU_ID = torch.device("cuda:3")
+MAX_SEQ_LENGTH = 384
+BATCH_SIZE = 16
+EPOCHS = 8

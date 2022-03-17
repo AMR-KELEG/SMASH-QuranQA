@@ -14,7 +14,7 @@ from tqdm import tqdm
 from transformers import BertTokenizer, BertForQuestionAnswering
 import torch
 from torch.utils.data import TensorDataset, DataLoader, RandomSampler, SequentialSampler
-from settings import gpu, epochs, max_seq_length, batch_size
+from settings import GPU_ID
 from data_utils import create_squad_examples, create_inputs_targets
 from quranqa.code.quranqa22_eval import (
     normalize_text,
@@ -24,10 +24,14 @@ from quranqa.code.quranqa22_eval import (
 import argparse
 from utils import find_interrogatives, get_spans
 from itertools import groupby
+import logging
+
+logger = logging.getLogger("Eval")
 
 parser = argparse.ArgumentParser(description="Evaluate the models.")
 parser.add_argument("--train", action="store_true")
 args = parser.parse_args()
+BATCH_SIZE = 16
 
 if args.train:
     datafile = "data/train_ar.jsonl"
@@ -52,14 +56,14 @@ eval_data = TensorDataset(
     torch.tensor(y_eval[0], dtype=torch.int64),
     torch.tensor(y_eval[1], dtype=torch.int64),
 )
-print(f"{len(eval_data)} evaluation points created.")
+logger.info(f"{len(eval_data)} evaluation points created.")
 eval_sampler = SequentialSampler(eval_data)
 validation_data_loader = DataLoader(
-    eval_data, sampler=eval_sampler, batch_size=batch_size
+    eval_data, sampler=eval_sampler, batch_size=BATCH_SIZE
 )
 
 # ============================================ TESTING =================================================================
-model = BertForQuestionAnswering.from_pretrained(model_name).to(device=gpu)
+model = BertForQuestionAnswering.from_pretrained(model_name).to(device=GPU_ID)
 model.load_state_dict(torch.load("checkpoints/weights_16.pth"))
 model.eval()
 
@@ -68,7 +72,6 @@ full_text_answers = []
 ids = []
 prrs = []
 wrong_answers = []
-BATCH_SIZE = 16
 
 for i in range(0, len(raw_eval_data), BATCH_SIZE):
     batch_data = raw_eval_data[i : i + BATCH_SIZE]
@@ -78,9 +81,9 @@ for i in range(0, len(raw_eval_data), BATCH_SIZE):
     # TODO: Fix this!
     x_test, y_test = create_inputs_targets(test_samples)
     pred_start, pred_end = model(
-        torch.tensor(x_test[0], dtype=torch.int64, device=gpu),
-        torch.tensor(x_test[1], dtype=torch.float, device=gpu),
-        torch.tensor(x_test[2], dtype=torch.int64, device=gpu),
+        torch.tensor(x_test[0], dtype=torch.int64, device=GPU_ID),
+        torch.tensor(x_test[1], dtype=torch.float, device=GPU_ID),
+        torch.tensor(x_test[2], dtype=torch.int64, device=GPU_ID),
         return_dict=False,
     )
     pred_start, pred_end = (
@@ -139,30 +142,29 @@ wrong_answers = sorted(wrong_answers, key=lambda d: d["type"])
 
 for k, v in groupby(wrong_answers, key=lambda a: a["type"]):
     typed_wrong_answers = sorted(list(v), key=lambda a: a["pRR"])
-    print(40 * "*")
-    print(k, len(typed_wrong_answers))
-    print(40 * "*")
-    print(
+    logger.info(40 * "*")
+    logger.info(k, len(typed_wrong_answers))
+    logger.info(40 * "*")
+    logger.info(
         round(np.mean([a["pRR"] for a in typed_wrong_answers]), 2),
         "±",
         round(np.std([a["pRR"] for a in typed_wrong_answers]), 2),
     )
 
-if True or input("Print questions? [y]/n: ") != "n":
+if False and input("logger.info questions? [y]/n: ") != "n":
     for k, v in groupby(wrong_answers, key=lambda a: a["type"]):
         typed_wrong_answers = sorted(list(v), key=lambda a: a["pRR"])
-        print(40 * "*")
-        print(k, len(typed_wrong_answers))
-        print(40 * "*")
+        logger.info(40 * "*")
+        logger.info(k, len(typed_wrong_answers))
+        logger.info(40 * "*")
         for wrong_answer in typed_wrong_answers:
-            print("pRR:", wrong_answer["pRR"])
-            print("Q:", wrong_answer["question"])
-            print("L:", wrong_answer["correct_answer"])
-            print("A:", wrong_answer["answer"])
-            print(wrong_answer["type"])
-            print()
+            logger.info("pRR:", wrong_answer["pRR"])
+            logger.info("Q:", wrong_answer["question"])
+            logger.info("L:", wrong_answer["correct_answer"])
+            logger.info("A:", wrong_answer["answer"])
+            logger.info(wrong_answer["type"])
+            logger.info()
 
-print(len(answers), len(full_text_answers), len(ids))
 with open("data/smash_run01.json", "w") as f:
     submission = {
         id: [
