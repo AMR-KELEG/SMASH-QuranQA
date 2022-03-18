@@ -1,30 +1,14 @@
-import json
-import os
-import re
-import sys
-
 import requests
-import string
-import numpy as np
-from colorama import Fore
-from tokenizers import BertWordPieceTokenizer
-from tqdm import tqdm
-from transformers import BertTokenizer, BertForQuestionAnswering
-import torch
-from torch.utils.data import TensorDataset, DataLoader, RandomSampler, SequentialSampler
-from settings import MAX_SEQ_LENGTH
 
-def download_dataset():
-    train_data_file = "https://gitlab.com/bigirqu/quranqa/-/raw/main/datasets/qrcd_v1.1_train.jsonl?inline=false"
-    dev_data_file = "https://gitlab.com/bigirqu/quranqa/-/raw/main/datasets/qrcd_v1.1_dev.jsonl?inline=false"
-    train_data = requests.get(train_data_file)
-    if train_data.status_code in (200,):
-        with open("data/train_ar.jsonl", "wb") as train_file:
-            train_file.write(train_data.content)
-    eval_data = requests.get(dev_data_file)
-    if eval_data.status_code in (200,):
-        with open("data/eval_ar.jsonl", "wb") as eval_file:
-            eval_file.write(eval_data.content)
+import re
+import string
+
+import sys
+from tqdm import tqdm
+from colorama import Fore
+
+import numpy as np
+from settings import MAX_SEQ_LENGTH
 
 
 class Sample:
@@ -47,46 +31,64 @@ class Sample:
         self.end_token_idx = -1
         self.question_id = question_id
 
-    def preprocess(self, tokenizer):
+    def preprocess(self, tokenizer, use_multiple_answers=False):
         if not tokenizer:
             return None
 
-        context = " ".join(str(self.context).split())
-        question = " ".join(str(self.question).split())
+        context = self.context
+        question = self.question
 
+        # Tokenize the strings into subwords
         tokenized_context = tokenizer.encode(context)
         tokenized_question = tokenizer.encode(question)
-        if self.answer_text is not None:
-            answer = " ".join(str(self.answer_text).split())
+
+        # TODO: Handle multiple answers
+        if use_multiple_answers and not self.all_answers:
+            pass
+
+        # Only use the first answer
+        elif self.answer_text:
+            answer = self.answer_text
+            # Find the end character
             end_char_idx = self.start_char_idx + len(answer)
-            if end_char_idx >= len(context):
-                self.skip = True
-                return
+
             is_char_in_ans = [0] * len(context)
             for idx in range(self.start_char_idx, end_char_idx):
                 is_char_in_ans[idx] = 1
+
+            # Find subtokens having any overlap with the range of characters
             ans_token_idx = []
             for idx, (start, end) in enumerate(tokenized_context.offsets):
                 if sum(is_char_in_ans[start:end]) > 0:
                     ans_token_idx.append(idx)
-            if len(ans_token_idx) == 0:
-                self.skip = True
-                return
+
+            # Specify the indecies of the start and end subtokens
             self.start_token_idx = ans_token_idx[0]
             self.end_token_idx = ans_token_idx[-1]
+
+        # Keeps ids of context and drop [CLS] from question
+        # Both has [SEP] at the end which is desired
         input_ids = tokenized_context.ids + tokenized_question.ids[1:]
+
+        # Form the segment ids
         token_type_ids = [0] * len(tokenized_context.ids) + [1] * len(
             tokenized_question.ids[1:]
         )
+        # Attend to all these tokens
         attention_mask = [1] * len(input_ids)
+
+        # Form padding
         padding_length = MAX_SEQ_LENGTH - len(input_ids)
         if padding_length > 0:
             input_ids = input_ids + ([0] * padding_length)
+            # Avoid attending to paddings
             attention_mask = attention_mask + ([0] * padding_length)
             token_type_ids = token_type_ids + ([0] * padding_length)
         elif padding_length < 0:
-            self.skip = True
-            return
+            # TODO: Do some logging
+            input_ids = input_ids[:MAX_SEQ_LENGTH]
+            attention_mask = attention_mask[:MAX_SEQ_LENGTH]
+            token_type_ids = token_type_ids[:MAX_SEQ_LENGTH]
         self.input_word_ids = input_ids
         self.input_type_ids = token_type_ids
         self.input_mask = attention_mask
@@ -110,9 +112,9 @@ def create_squad_examples(raw_data, desc, tokenizer):
         question = line["question"]
         # TODO: Handle if answers aren't there
         if line["answers"]:
-            all_answers = [a["text"] for a in line["answers"]]
-            answer_text = all_answers[0]
-            start_char_idx = line["answers"][0]["start_char"]
+            all_answers = line["answers"]
+            answer_text = all_answers[0]["text"]
+            start_char_idx = all_answers[0]["start_char"]
             squad_eg = Sample(
                 question,
                 context,
@@ -138,12 +140,16 @@ def create_inputs_targets(squad_examples):
         "start_token_idx": [],
         "end_token_idx": [],
     }
+    # Form list of values from the Sample objects
     for item in squad_examples:
-        if item.skip is False:
-            for key in dataset_dict:
-                dataset_dict[key].append(getattr(item, key))
+        for key in dataset_dict:
+            dataset_dict[key].append(getattr(item, key))
+
+    # Transform the lists into numpy arrays
     for key in dataset_dict:
         dataset_dict[key] = np.array(dataset_dict[key])
+
+    # Form the x, y tensors
     x = [
         dataset_dict["input_word_ids"],
         dataset_dict["input_mask"],
@@ -155,9 +161,18 @@ def create_inputs_targets(squad_examples):
 
 def normalize_text(text):
     # TODO: Handle Arabic text
-    # text = text.lower()
     text = "".join(ch for ch in text if ch not in set(string.punctuation))
-    # regex = re.compile(r"\b(a|an|the)\b", re.UNICODE)
-    # text = re.sub(regex, " ", text)
-    # text = " ".join(text.split())
     return text
+
+
+def download_dataset():
+    train_data_file = "https://gitlab.com/bigirqu/quranqa/-/raw/main/datasets/qrcd_v1.1_train.jsonl?inline=false"
+    dev_data_file = "https://gitlab.com/bigirqu/quranqa/-/raw/main/datasets/qrcd_v1.1_dev.jsonl?inline=false"
+    train_data = requests.get(train_data_file)
+    if train_data.status_code in (200,):
+        with open("data/train_ar.jsonl", "wb") as train_file:
+            train_file.write(train_data.content)
+    eval_data = requests.get(dev_data_file)
+    if eval_data.status_code in (200,):
+        with open("data/eval_ar.jsonl", "wb") as eval_file:
+            eval_file.write(eval_data.content)
