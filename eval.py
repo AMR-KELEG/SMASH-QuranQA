@@ -11,7 +11,7 @@ import numpy as np
 from colorama import Fore
 from tokenizers import BertWordPieceTokenizer
 from tqdm import tqdm
-from transformers import BertTokenizer, BertForQuestionAnswering
+from transformers import BertTokenizer
 import torch
 from torch.utils.data import TensorDataset, DataLoader, RandomSampler, SequentialSampler
 from settings import GPU_ID
@@ -25,6 +25,7 @@ import argparse
 from utils import find_interrogatives, get_spans
 from itertools import groupby
 import logging
+from model import MultiTaskQAModel
 
 logger = logging.getLogger("Eval")
 
@@ -63,7 +64,7 @@ validation_data_loader = DataLoader(
 )
 
 # ============================================ TESTING =================================================================
-model = BertForQuestionAnswering.from_pretrained(model_name).to(device=GPU_ID)
+model = ModifiedQAModel(model_name).to(device=GPU_ID)
 model.load_state_dict(torch.load("checkpoints/weights_16.pth"))
 model.eval()
 
@@ -80,15 +81,19 @@ for i in range(0, len(raw_eval_data), BATCH_SIZE):
     )
     # TODO: Fix this!
     x_test, y_test = create_inputs_targets(test_samples)
-    pred_start, pred_end = model(
+    outputs = model(
         torch.tensor(x_test[0], dtype=torch.int64, device=GPU_ID),
         torch.tensor(x_test[1], dtype=torch.float, device=GPU_ID),
         torch.tensor(x_test[2], dtype=torch.int64, device=GPU_ID),
-        return_dict=False,
     )
+
+    start_logits, end_logits = outputs[1].split(1, dim=-1)
+    start_logits = start_logits.squeeze(-1).contiguous()
+    end_logits = end_logits.squeeze(-1).contiguous()
+
     pred_start, pred_end = (
-        pred_start.detach().cpu().numpy(),
-        pred_end.detach().cpu().numpy(),
+        start_logits.detach().cpu().numpy(),
+        end_logits.detach().cpu().numpy(),
     )
 
     for idx, (start, end) in enumerate(zip(pred_start, pred_end)):
