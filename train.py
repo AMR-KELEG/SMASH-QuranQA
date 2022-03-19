@@ -22,6 +22,7 @@ from data_utils import (
 )
 from settings import GPU_ID, EPOCHS, MAX_SEQ_LENGTH, BATCH_SIZE
 import logging
+from model import MultiTaskQAModel
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train BERT on QA.")
@@ -32,7 +33,9 @@ if __name__ == "__main__":
         help="Use the model fine-tuned for NER.",
     )
     parser.add_argument(
-        "--seed", default=0, help="The value of the random seed to use.",
+        "--seed",
+        default=0,
+        help="The value of the random seed to use.",
     )
     args = parser.parse_args()
 
@@ -81,6 +84,7 @@ if __name__ == "__main__":
         torch.tensor(x_train[2], dtype=torch.int64),
         torch.tensor(y_train[0], dtype=torch.int64),
         torch.tensor(y_train[1], dtype=torch.int64),
+        torch.tensor(y_train[2], dtype=torch.int64),
     )
     logger.info(f"{len(train_data)} training points created.")
     train_sampler = RandomSampler(train_data)
@@ -93,17 +97,15 @@ if __name__ == "__main__":
         torch.tensor(x_eval[2], dtype=torch.int64),
         torch.tensor(y_eval[0], dtype=torch.int64),
         torch.tensor(y_eval[1], dtype=torch.int64),
+        torch.tensor(y_eval[2], dtype=torch.int64),
     )
     logger.info(f"{len(eval_data)} evaluation points created.")
     eval_sampler = SequentialSampler(eval_data)
-    validation_data_loader = DataLoader(
-        eval_data, sampler=eval_sampler, batch_size=BATCH_SIZE
-    )
+    validation_data_loader = DataLoader(eval_data, sampler=eval_sampler, batch_size=1)
 
     # TODO: Continue pretraining
     # https://huggingface.co/docs/transformers/model_doc/bert#transformers.BertForPreTraining
-    model = BertForQuestionAnswering.from_pretrained(model_name)
-    model.qa_outputs = nn.Linear(768, 2)
+    model = MultiTaskQAModel(model_name)
     model = model.to(device=GPU_ID)
     param_optimizer = list(model.named_parameters())
     no_decay = ["bias", "gamma", "beta"]
@@ -125,6 +127,8 @@ if __name__ == "__main__":
     optimizer = torch.optim.Adam(
         lr=1e-5, betas=(0.9, 0.98), eps=1e-9, params=optimizer_grouped_parameters
     )
+
+    ner_loss = nn.CrossEntropyLoss()
 
     for epoch in range(1, EPOCHS + 1):
         logger.info("Training epoch ", str(epoch))
@@ -148,16 +152,40 @@ if __name__ == "__main__":
                 input_type_ids,
                 start_token_idx,
                 end_token_idx,
+                ner_labels,
             ) = batch
             optimizer.zero_grad()
-            loss, _, _ = model(
+            outputs = model(
                 input_ids=input_word_ids,
                 attention_mask=input_mask,
                 token_type_ids=input_type_ids,
-                start_positions=start_token_idx,
-                end_positions=end_token_idx,
-                return_dict=False,
             )
+            # Loss of NER
+            ner_loss_fct = nn.CrossEntropyLoss(ignore_index=-100)
+            ner_loss = ner_loss_fct(outputs[2].view(-1, 2), ner_labels.view(-1))
+
+            # Loss of QA
+            start_logits, end_logits = outputs[1].split(1, dim=-1)
+            start_logits = start_logits.squeeze(-1).contiguous()
+            end_logits = end_logits.squeeze(-1).contiguous()
+
+            total_loss = None
+            # If we are on multi-GPU, split add a dimension
+            if len(start_token_idx.size()) > 1:
+                start_token_idx = start_token_idx.squeeze(-1)
+            if len(end_token_idx.size()) > 1:
+                end_token_idx = end_token_idx.squeeze(-1)
+            # sometimes the start/end positions are outside our model inputs, we ignore these terms
+            ignored_index = start_logits.size(1)
+            start_token_idx = start_token_idx.clamp(0, ignored_index)
+            end_token_idx = end_token_idx.clamp(0, ignored_index)
+
+            loss_fct = nn.CrossEntropyLoss(ignore_index=ignored_index)
+            start_loss = loss_fct(start_logits, start_token_idx)
+            end_loss = loss_fct(end_logits, end_token_idx)
+            total_loss = (start_loss + end_loss) / 2
+            loss = total_loss + ner_loss
+
             loss.backward()
             optimizer.step()
             tr_loss += loss.item()
@@ -187,23 +215,28 @@ if __name__ == "__main__":
                 input_type_ids,
                 start_token_idx,
                 end_token_idx,
+                ner_labels,
             ) = batch
             with torch.no_grad():
-                start_logits, end_logits = model(
+                outputs = model(
                     input_ids=input_word_ids,
                     attention_mask=input_mask,
                     token_type_ids=input_type_ids,
-                    return_dict=False,
                 )
+
+                start_logits, end_logits = outputs[1].split(1, dim=-1)
+                start_logits = start_logits.squeeze(-1).contiguous()
+                end_logits = end_logits.squeeze(-1).contiguous()
+
                 pred_start, pred_end = (
                     start_logits.detach().cpu().numpy(),
                     end_logits.detach().cpu().numpy(),
                 )
 
             for idx, (start, end) in enumerate(zip(pred_start, pred_end)):
-                squad_eg = eval_examples_no_skip[currentIdx]
+                qa_sample = eval_examples_no_skip[currentIdx]
                 currentIdx += 1
-                offsets = squad_eg.context_token_to_char
+                offsets = qa_sample.context_token_to_char
                 start = np.argmax(start)
                 end = np.argmax(end)
                 if start >= len(offsets):
@@ -211,11 +244,11 @@ if __name__ == "__main__":
                 pred_char_start = offsets[start][0]
                 if end < len(offsets):
                     pred_char_end = offsets[end][1]
-                    pred_ans = squad_eg.context[pred_char_start:pred_char_end]
+                    pred_ans = qa_sample.context[pred_char_start:pred_char_end]
                 else:
-                    pred_ans = squad_eg.context[pred_char_start:]
+                    pred_ans = qa_sample.context[pred_char_start:]
                 normalized_pred_ans = normalize_text(pred_ans)
-                normalized_true_ans = [normalize_text(_) for _ in squad_eg.all_answers]
+                normalized_true_ans = [normalize_text(_["text"]) for _ in qa_sample.all_answers]
                 if normalized_pred_ans in normalized_true_ans:
                     count += 1
             validation_pbar.update(input_word_ids.size(0))
