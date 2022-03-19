@@ -3,7 +3,9 @@ import os
 import re
 import sys
 
-sys.path.append("quranqa/code/")
+# TODO: Fix this!
+sys.path.append("../")
+sys.path.append("../quranqa/code/")
 
 import requests
 import string
@@ -32,7 +34,6 @@ logger = logging.getLogger("Eval")
 parser = argparse.ArgumentParser(description="Evaluate the models.")
 parser.add_argument("--train", action="store_true")
 args = parser.parse_args()
-BATCH_SIZE = 16
 
 if args.train:
     datafile = "data/train_ar.jsonl"
@@ -60,11 +61,11 @@ eval_data = TensorDataset(
 logger.info(f"{len(eval_data)} evaluation points created.")
 eval_sampler = SequentialSampler(eval_data)
 validation_data_loader = DataLoader(
-    eval_data, sampler=eval_sampler, batch_size=BATCH_SIZE
+    eval_data, sampler=eval_sampler, batch_size=1
 )
 
 # ============================================ TESTING =================================================================
-model = ModifiedQAModel(model_name).to(device=GPU_ID)
+model = MultiTaskQAModel(model_name).to(device=GPU_ID)
 model.load_state_dict(torch.load("checkpoints/weights_16.pth"))
 model.eval()
 
@@ -74,8 +75,8 @@ ids = []
 prrs = []
 wrong_answers = []
 
-for i in range(0, len(raw_eval_data), BATCH_SIZE):
-    batch_data = raw_eval_data[i : i + BATCH_SIZE]
+for i in range(0, len(raw_eval_data), 1):
+    batch_data = raw_eval_data[i : i + 1]
     test_samples = create_squad_examples(
         batch_data, f"Creating test points for batch #{i}", tokenizer
     )
