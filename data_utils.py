@@ -8,18 +8,23 @@ from tqdm import tqdm
 from colorama import Fore
 
 import numpy as np
-from settings import MAX_SEQ_LENGTH
+from settings import MAX_SEQ_LENGTH, CROSS_ENTROPY_IGNORE_INDEX
 from torch import nn
 
 
 def get_ner_labels(sentence, tokens, ner_char_ranges):
-    is_char_in_range = [False for _ in range(len(sentence))]
+    """
+    Assign a lable of 0 (not a named-entity), 1 (named-entity) to tokens
+    """
+
+    char_is_in_an_ner_range = [False for _ in range(len(sentence))]
     for st, en in ner_char_ranges:
         for index in range(st, en):
-            is_char_in_range[index] = True
+            char_is_in_an_ner_range[index] = True
 
+    # Assign the token a label of 1 if any of its characters is within an ner range
     ner_labels = [
-        1 if sum(is_char_in_range[start:end]) > 0 else 0
+        1 if sum(char_is_in_an_ner_range[start:end]) > 0 else 0
         for start, end in tokens.offsets
     ]
 
@@ -59,6 +64,7 @@ class Sample:
 
         persons_mentions_context = get_persons(context)
         persons_mentions_question = get_persons(question)
+
         # TODO: Handle multiple answers
         if use_multiple_answers and not self.all_answers:
             pass
@@ -83,6 +89,8 @@ class Sample:
             self.start_token_idx = ans_token_idx[0]
             self.end_token_idx = ans_token_idx[-1]
 
+            # TODO: Does the order matter? (i.e. Context, Question or Question, Context)
+            # Assign ner labels to the tokens in both the context and the question
             self.ner_labels = (
                 get_ner_labels(context, tokenized_context, persons_mentions_context)
                 + get_ner_labels(
@@ -108,8 +116,7 @@ class Sample:
             attention_mask = attention_mask + ([0] * padding_length)
             token_type_ids = token_type_ids + ([0] * padding_length)
             if self.ner_labels:
-                # -100 is the CrossEntropyLoss ignore_index
-                self.ner_labels = self.ner_labels + ([-100] * padding_length)
+                self.ner_labels = self.ner_labels + ([CROSS_ENTROPY_IGNORE_INDEX] * padding_length)
 
         elif padding_length < 0:
             # TODO: Do some logging

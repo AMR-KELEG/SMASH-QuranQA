@@ -20,7 +20,13 @@ from data_utils import (
     normalize_text,
     download_dataset,
 )
-from settings import GPU_ID, EPOCHS, MAX_SEQ_LENGTH, BATCH_SIZE
+from settings import (
+    GPU_ID,
+    EPOCHS,
+    MAX_SEQ_LENGTH,
+    BATCH_SIZE,
+    CROSS_ENTROPY_IGNORE_INDEX,
+)
 import logging
 from model import MultiTaskQAModel
 
@@ -33,9 +39,7 @@ if __name__ == "__main__":
         help="Use the model fine-tuned for NER.",
     )
     parser.add_argument(
-        "--seed",
-        default=0,
-        help="The value of the random seed to use.",
+        "--seed", default=0, help="The value of the random seed to use.",
     )
     args = parser.parse_args()
 
@@ -161,7 +165,7 @@ if __name__ == "__main__":
                 token_type_ids=input_type_ids,
             )
             # Loss of NER
-            ner_loss_fct = nn.CrossEntropyLoss(ignore_index=-100)
+            ner_loss_fct = nn.CrossEntropyLoss(ignore_index=CROSS_ENTROPY_IGNORE_INDEX)
             ner_loss = ner_loss_fct(outputs[2].view(-1, 2), ner_labels.view(-1))
 
             # Loss of QA
@@ -248,7 +252,9 @@ if __name__ == "__main__":
                 else:
                     pred_ans = qa_sample.context[pred_char_start:]
                 normalized_pred_ans = normalize_text(pred_ans)
-                normalized_true_ans = [normalize_text(_["text"]) for _ in qa_sample.all_answers]
+                normalized_true_ans = [
+                    normalize_text(_["text"]) for _ in qa_sample.all_answers
+                ]
                 if normalized_pred_ans in normalized_true_ans:
                     count += 1
             validation_pbar.update(input_word_ids.size(0))
