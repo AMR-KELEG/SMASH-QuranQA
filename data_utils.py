@@ -216,7 +216,7 @@ def download_dataset():
 def get_persons(passage):
     # Handle cases of person having proclitics OR
     # having Alef+Tanween as enclitic
-    with open("../code/data/persons.txt", "r") as f:
+    with open("data/persons.txt", "r") as f:
         PERSONS = [l.strip() for l in f]
 
     persons_mentions_ranges = []
