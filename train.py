@@ -26,6 +26,7 @@ from settings import (
     MAX_SEQ_LENGTH,
     BATCH_SIZE,
     CROSS_ENTROPY_IGNORE_INDEX,
+    MODEL_NAME
 )
 import logging
 from model import MultiTaskQAModel
@@ -39,14 +40,17 @@ if __name__ == "__main__":
         help="Use the model fine-tuned for NER.",
     )
     parser.add_argument(
-        "--seed", default=0, help="The value of the random seed to use.",
+        "--seed",
+        default=0,
+        help="The value of the random seed to use.",
     )
+    parser.add_argument("--desc", required=True, help="The description of the model.")
     args = parser.parse_args()
 
     # Try setting the seed
     torch.manual_seed(args.seed)
 
-    model_name = "CAMeL-Lab/bert-base-arabic-camelbert-ca"
+    model_name = MODEL_NAME
     # Use the model that was fine-tuned for NER
     if args.ner:
         model_name = model_name + "-ner"
@@ -196,8 +200,7 @@ if __name__ == "__main__":
             nb_tr_steps += 1
             training_pbar.update(input_word_ids.size(0))
         training_pbar.close()
-        logger.info(f"\nTraining loss={tr_loss / nb_tr_steps:.4f}")
-        torch.save(model.state_dict(), "checkpoints/weights_" + str(epoch) + ".pth")
+        torch.save(model.state_dict(), f"checkpoints/weights_{args.desc}_seed_{args.seed}" + str(epoch) + ".pth")
 
         # Run validation
         validation_pbar = tqdm(

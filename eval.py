@@ -16,7 +16,7 @@ from tqdm import tqdm
 from transformers import BertTokenizer
 import torch
 from torch.utils.data import TensorDataset, DataLoader, RandomSampler, SequentialSampler
-from settings import GPU_ID
+from settings import GPU_ID, MODEL_NAME
 from data_utils import create_squad_examples, create_inputs_targets
 from quranqa.code.quranqa22_eval import (
     normalize_text,
@@ -44,8 +44,7 @@ with open(datafile, "r") as f:
     raw_eval_data = [json.loads(l) for l in f]
 
 
-model_name = "CAMeL-Lab/bert-base-arabic-camelbert-ca"
-tokenizer = BertWordPieceTokenizer(f"{model_name}_/vocab.txt", lowercase=True)
+tokenizer = BertWordPieceTokenizer(f"{MODEL_NAME}_/vocab.txt", lowercase=True)
 # ============================================= PREPARING DATASET ======================================================
 eval_squad_examples = create_squad_examples(
     raw_eval_data, "Creating evaluation points", tokenizer
@@ -60,12 +59,10 @@ eval_data = TensorDataset(
 )
 logger.info(f"{len(eval_data)} evaluation points created.")
 eval_sampler = SequentialSampler(eval_data)
-validation_data_loader = DataLoader(
-    eval_data, sampler=eval_sampler, batch_size=1
-)
+validation_data_loader = DataLoader(eval_data, sampler=eval_sampler, batch_size=1)
 
 # ============================================ TESTING =================================================================
-model = MultiTaskQAModel(model_name).to(device=GPU_ID)
+model = MultiTaskQAModel(MODEL_NAME).to(device=GPU_ID)
 model.load_state_dict(torch.load("checkpoints/weights_16.pth"))
 model.eval()
 
@@ -131,16 +128,17 @@ for i in range(0, len(raw_eval_data), 1):
         full_text_answers.append(test_sample.answer_text)
         prrs.append(prr)
 
-        if normalize_text(remove_prefixes(pred_ans)) != normalize_text(
-            remove_prefixes(test_sample.answer_text)
-        ):
+        cleaned_pred = normalize_text(remove_prefixes(pred_ans))
+        cleaned_ans = normalize_text(remove_prefixes(test_sample.answer_text))
+        if cleaned_ans != cleaned_pred:
             wrong_answers.append(
                 {
-                    "answer": pred_ans,
+                    "answer": cleaned_pred,
                     "question": test_sample.question,
-                    "correct_answer": test_sample.answer_text,
+                    "correct_answer": cleaned_ans,
                     "pRR": round(prr, 5),
                     "type": find_interrogatives(test_sample.question),
+                    "context": test_sample.context,
                 }
             )
 

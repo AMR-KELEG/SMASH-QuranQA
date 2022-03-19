@@ -10,7 +10,7 @@ from settings import *
 
 
 class MultiTaskQAModel(nn.Module):
-    def __init__(self, model_name="CAMeL-Lab/bert-base-arabic-camelbert-ca-ner"):
+    def __init__(self, model_name=MODEL_NAME):
         super().__init__()
         ner = pipeline("ner", model=model_name)
         self.bert = ner.model.bert
