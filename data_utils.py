@@ -228,6 +228,9 @@ def get_persons(passage):
     with open("data/persons.txt", "r") as f:
         PERSONS = [l.strip() for l in f]
 
+    with open("data/animals.txt", "r") as f:
+        PERSONS += [l.strip() for l in f]
+
     persons_mentions_ranges = []
     for PERSON in PERSONS:
         regexps = [rf"{PERSON}\b", rf"{PERSON}ا\b"]
