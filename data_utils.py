@@ -116,7 +116,9 @@ class Sample:
             attention_mask = attention_mask + ([0] * padding_length)
             token_type_ids = token_type_ids + ([0] * padding_length)
             if self.ner_labels:
-                self.ner_labels = self.ner_labels + ([CROSS_ENTROPY_IGNORE_INDEX] * padding_length)
+                self.ner_labels = self.ner_labels + (
+                    [CROSS_ENTROPY_IGNORE_INDEX] * padding_length
+                )
 
         elif padding_length < 0:
             # TODO: Do some logging
@@ -234,6 +236,11 @@ def get_persons(passage):
                 persons_mentions_ranges.append((match.start(), match.end()))
 
     mentions = sorted(persons_mentions_ranges)
+
+    # Find mentions in the form اسم موصول للجمع + next word
+    regexp = r"([ال](?:لذين|لا[تئ]ي) \S{4,})\b"
+    if re.search(regexp, passage):
+        mentions += [(m.start(), m.end()) for m in re.finditer(regexp, passage)]
 
     if not mentions:
         return []
