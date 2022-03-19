@@ -64,6 +64,7 @@ if __name__ == "__main__":
     )
     # Remove "تبع" as it overlaps with the verb "تبع" causing False positives
     persons = [p for p in persons if p != "تبع"]
+    persons = [p if not p.startswith("ال") else p[2:] for p in persons]
     persons = sorted(set([p.strip() for p in persons]))
 
     soup = BeautifulSoup(list_of_animals, "html.parser")
