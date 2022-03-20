@@ -16,7 +16,7 @@ from tqdm import tqdm
 from transformers import BertTokenizer
 import torch
 from torch.utils.data import TensorDataset, DataLoader, RandomSampler, SequentialSampler
-from settings import GPU_ID, MODEL_NAME
+from settings import GPU_ID, MODEL_NAME, EPOCHS
 from data_utils import create_squad_examples, create_inputs_targets
 from quranqa.code.quranqa22_eval import (
     normalize_text,
@@ -33,6 +33,18 @@ logger = logging.getLogger("Eval")
 
 parser = argparse.ArgumentParser(description="Evaluate the models.")
 parser.add_argument("--train", action="store_true")
+parser.add_argument(
+    "--seed",
+    default=0,
+    help="The value of the random seed to use.",
+)
+parser.add_argument(
+    "--epoch",
+    default=EPOCHS,
+    help="The value of the epoch at which the checkpoint was generated.",
+)
+parser.add_argument("--desc", required=True, help="The description of the model.")
+
 args = parser.parse_args()
 
 if args.train:
@@ -57,17 +69,19 @@ eval_data = TensorDataset(
     torch.tensor(y_eval[0], dtype=torch.int64),
     torch.tensor(y_eval[1], dtype=torch.int64),
 )
-logger.info(f"{len(eval_data)} evaluation points created.")
+print(f"{len(eval_data)} evaluation points created.")
 eval_sampler = SequentialSampler(eval_data)
 validation_data_loader = DataLoader(eval_data, sampler=eval_sampler, batch_size=1)
 
 # ============================================ TESTING =================================================================
 model = MultiTaskQAModel(MODEL_NAME).to(device=GPU_ID)
-model.load_state_dict(torch.load("checkpoints/weights_16.pth"))
+checkpoint_name = (
+    f"checkpoints/weights_{args.desc}_seed_{args.seed}_" + str(args.epoch) + ".pth"
+)
+model.load_state_dict(torch.load(checkpoint_name))
 model.eval()
 
 answers = []
-full_text_answers = []
 ids = []
 prrs = []
 wrong_answers = []
@@ -95,6 +109,7 @@ for i in range(0, len(raw_eval_data), 1):
     )
 
     for idx, (start, end) in enumerate(zip(pred_start, pred_end)):
+        # TODO: What is this doing actually?
         test_sample = test_samples[idx]
         try:
             offsets = test_sample.context_token_to_char
@@ -103,39 +118,52 @@ for i in range(0, len(raw_eval_data), 1):
             # Investigate the reason for this!
             offsets = []
 
-        # TODO: Complete these spans!
-        get_spans(start, end)
+        # N.B: This might be an invalid range (i.e: start > end)
+        greedy_range = [(1.0, np.argmax(start), np.argmax(end))]
 
-        start = np.argmax(start)
-        end = np.argmax(end)
+        # Greedily find the most probable 5 candidate spans of answers
+        answers_ranges = get_spans(start, end, n_ranges=3) + [(1.0, len(offsets), -1)] + greedy_range
 
-        pred_ans = None
-        if start >= len(offsets):
-            pred_ans = test_sample.context
-        else:
-            pred_char_start = offsets[start][0]
-            if end < len(offsets):
-                pred_ans = test_sample.context[pred_char_start : offsets[end][1]]
+        # Avoid greedy decoding for ranges
+        # start = np.argmax(start)
+        # end = np.argmax(end)
+
+        pred_answers = []
+        pred_char_starts = []
+
+        # Reverse the range of spans considering the most probable one first!
+        for prob, start, end in answers_ranges[::-1]:
+            pred_ans = None
+            # Is the start of the range valid?
+            if start < len(offsets):
+                pred_char_start = offsets[start][0]
+                if end < len(offsets):
+                    pred_ans = test_sample.context[pred_char_start : offsets[end][1]]
+                else:
+                    pred_ans = test_sample.context[pred_char_start:]
             else:
-                pred_ans = test_sample.context[pred_char_start:]
-        if not pred_ans:
-            pred_ans = test_sample.context
+                pred_ans = test_sample.context
+                pred_char_start = 0
+            pred_answers.append(pred_ans)
+            pred_char_starts.append([pred_char_start])
+
+        assert(len(pred_answers)==len(pred_char_starts))
+        # TODO: How are char_start used?
         prr = pRR_max_over_ground_truths(
-            [pred_ans], [[pred_char_start]], [{"text": test_sample.answer_text}]
+            pred_answers, pred_char_starts, [{"text": a["text"]} for a in test_sample.all_answers]
         )
-        answers.append(pred_ans)
+        answers.append(pred_answers)
         ids.append(test_sample.question_id)
-        full_text_answers.append(test_sample.answer_text)
         prrs.append(prr)
 
-        cleaned_pred = normalize_text(remove_prefixes(pred_ans))
+        cleaned_pred = normalize_text(remove_prefixes(pred_answers[-1]))
         cleaned_ans = normalize_text(remove_prefixes(test_sample.answer_text))
-        if cleaned_ans != cleaned_pred:
+        if prr < 1:
             wrong_answers.append(
                 {
-                    "answer": cleaned_pred,
+                    "answer": [normalize_text(remove_prefixes(a)) for a in pred_answers],
                     "question": test_sample.question,
-                    "correct_answer": cleaned_ans,
+                    "correct_answer": [normalize_text(remove_prefixes(a["text"])) for a in test_sample.all_answers],
                     "pRR": round(prr, 5),
                     "type": find_interrogatives(test_sample.question),
                     "context": test_sample.context,
@@ -146,35 +174,37 @@ wrong_answers = sorted(wrong_answers, key=lambda d: d["type"])
 
 for k, v in groupby(wrong_answers, key=lambda a: a["type"]):
     typed_wrong_answers = sorted(list(v), key=lambda a: a["pRR"])
-    logger.info(40 * "*")
-    logger.info(k, len(typed_wrong_answers))
-    logger.info(40 * "*")
-    logger.info(
+    print(40 * "*")
+    print(k, len(typed_wrong_answers))
+    print(40 * "*")
+    print(
         round(np.mean([a["pRR"] for a in typed_wrong_answers]), 2),
         "±",
         round(np.std([a["pRR"] for a in typed_wrong_answers]), 2),
+        f"Loss in pRR = {len(typed_wrong_answers) - sum([a['pRR'] for a in typed_wrong_answers])}",
     )
 
-if False and input("logger.info questions? [y]/n: ") != "n":
+if False and input("print questions? [y]/n: ") != "n":
     for k, v in groupby(wrong_answers, key=lambda a: a["type"]):
         typed_wrong_answers = sorted(list(v), key=lambda a: a["pRR"])
-        logger.info(40 * "*")
-        logger.info(k, len(typed_wrong_answers))
-        logger.info(40 * "*")
+        print(40 * "*")
+        print(k, len(typed_wrong_answers))
+        print(40 * "*")
         for wrong_answer in typed_wrong_answers:
-            logger.info("pRR:", wrong_answer["pRR"])
-            logger.info("Q:", wrong_answer["question"])
-            logger.info("L:", wrong_answer["correct_answer"])
-            logger.info("A:", wrong_answer["answer"])
-            logger.info(wrong_answer["type"])
-            logger.info()
+            print("pRR:", wrong_answer["pRR"])
+            print("Q:", wrong_answer["question"])
+            print("C:", wrong_answer["context"])
+            print("L:", wrong_answer["correct_answer"])
+            print("A:", wrong_answer["answer"])
+            print(wrong_answer["type"])
+            print()
 
 with open("data/smash_run01.json", "w") as f:
     submission = {
         id: [
-            {"answer": answer, "rank": 1, "score": 0.99},
-            {"answer": full_answer, "rank": 2, "score": 0.01},
+            {"answer": answer, "rank": i+1, "score": 0.2}
+            for i, answer in enumerate(answers_list)
         ]
-        for id, answer, full_answer in zip(ids, answers, full_text_answers)
+        for id, answers_list in zip(ids, answers)
     }
     json.dump(submission, f, ensure_ascii=False)
