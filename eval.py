@@ -103,29 +103,24 @@ for i in range(0, len(raw_eval_data), 1):
             # Investigate the reason for this!
             offsets = []
 
-        # TODO: Complete these spans!
-        get_spans(start, end)
-
         start = np.argmax(start)
         end = np.argmax(end)
 
-        pred_ans = None
-        if start >= len(offsets):
-            pred_ans = test_sample.context
+        pred_char_start = offsets[start][0]
+        if end < len(offsets):
+            pred_ans = test_sample.context[pred_char_start : offsets[end][1]]
         else:
-            pred_char_start = offsets[start][0]
-            if end < len(offsets):
-                pred_ans = test_sample.context[pred_char_start : offsets[end][1]]
-            else:
-                pred_ans = test_sample.context[pred_char_start:]
-        if not pred_ans:
-            pred_ans = test_sample.context
+            pred_ans = test_sample.context[pred_char_start:]
+
         prr = pRR_max_over_ground_truths(
-            [pred_ans], [[pred_char_start]], [{"text": test_sample.answer_text}]
+            [pred_ans, test_sample.context],
+            [[pred_char_start], [0]],
+            [{"text": a["text"]} for a in test_sample.all_answers],
         )
+
         answers.append(pred_ans)
         ids.append(test_sample.question_id)
-        full_text_answers.append(test_sample.answer_text)
+        full_text_answers.append(test_sample.context)
         prrs.append(prr)
 
         cleaned_pred = normalize_text(remove_prefixes(pred_ans))
