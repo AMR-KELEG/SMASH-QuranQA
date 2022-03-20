@@ -10,10 +10,11 @@ from settings import *
 
 
 class MultiTaskQAModel(nn.Module):
-    def __init__(self, model_name=MODEL_NAME):
+    def __init__(self, model_name=MODEL_NAME, dropout_p=0.5):
         super().__init__()
         ner = pipeline("ner", model=model_name)
         self.bert = ner.model.bert
+        self.dropout = nn.Dropout(p=dropout_p, inplace=False)
         self.ner_layer = nn.Linear(in_features=768, out_features=2, bias=True)
         self.qa_layer = nn.Linear(in_features=768, out_features=2, bias=True)
 
@@ -28,17 +29,19 @@ class MultiTaskQAModel(nn.Module):
         output_attentions=None,
         output_hidden_states=None,
     ):
-        bert_output = self.bert(
-            input_ids,
-            attention_mask=attention_mask,
-            token_type_ids=token_type_ids,
-            position_ids=position_ids,
-            head_mask=head_mask,
-            inputs_embeds=inputs_embeds,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=True,
-        )["last_hidden_state"]
+        bert_output = self.dropout(
+            self.bert(
+                input_ids,
+                attention_mask=attention_mask,
+                token_type_ids=token_type_ids,
+                position_ids=position_ids,
+                head_mask=head_mask,
+                inputs_embeds=inputs_embeds,
+                output_attentions=output_attentions,
+                output_hidden_states=output_hidden_states,
+                return_dict=True,
+            )["last_hidden_state"]
+        )
 
         # TODO: Do I need a dropout layer after BERT?
         qa_output = self.qa_layer(bert_output)

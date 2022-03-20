@@ -26,7 +26,7 @@ from settings import (
     MAX_SEQ_LENGTH,
     BATCH_SIZE,
     CROSS_ENTROPY_IGNORE_INDEX,
-    MODEL_NAME
+    MODEL_NAME,
 )
 import logging
 from model import MultiTaskQAModel
@@ -43,6 +43,11 @@ if __name__ == "__main__":
         "--seed",
         default=0,
         help="The value of the random seed to use.",
+    )
+    parser.add_argument(
+        "--dropout_p",
+        default=0,
+        help="The value of the dropout probability after BERT.",
     )
     parser.add_argument("--desc", required=True, help="The description of the model.")
     args = parser.parse_args()
@@ -113,7 +118,7 @@ if __name__ == "__main__":
 
     # TODO: Continue pretraining
     # https://huggingface.co/docs/transformers/model_doc/bert#transformers.BertForPreTraining
-    model = MultiTaskQAModel(model_name)
+    model = MultiTaskQAModel(model_name, dropout_p=args.dropout_p)
     model = model.to(device=GPU_ID)
     param_optimizer = list(model.named_parameters())
     no_decay = ["bias", "gamma", "beta"]
@@ -200,7 +205,10 @@ if __name__ == "__main__":
             nb_tr_steps += 1
             training_pbar.update(input_word_ids.size(0))
         training_pbar.close()
-        torch.save(model.state_dict(), f"checkpoints/weights_{args.desc}_seed_{args.seed}" + str(epoch) + ".pth")
+        torch.save(
+            model.state_dict(),
+            f"checkpoints/weights_{args.desc}_seed_{args.seed}_" + str(epoch) + ".pth",
+        )
 
         # Run validation
         validation_pbar = tqdm(
