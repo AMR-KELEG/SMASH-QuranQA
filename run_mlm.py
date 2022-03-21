@@ -28,6 +28,7 @@ import sys
 from dataclasses import dataclass, field
 from itertools import chain
 from typing import Optional
+import torch
 
 import datasets
 from datasets import load_dataset, load_metric
