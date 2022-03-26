@@ -4,12 +4,15 @@ import re
 import string
 
 import sys
+import json
 from tqdm import tqdm
 from colorama import Fore
 
 import numpy as np
 from settings import MAX_SEQ_LENGTH, CROSS_ENTROPY_IGNORE_INDEX
 from torch import nn
+import torch
+from torch.utils.data import TensorDataset
 
 
 def get_ner_labels(sentence, tokens, ner_char_ranges):
@@ -272,3 +275,19 @@ def get_persons(passage):
         else:
             ranges.append(cur_range)
     return ranges
+
+
+def load_dataset_as_tensors(datafile, desc, tokenizer):
+    with open(datafile, "r") as f:
+        raw_data = [json.loads(l) for l in f]
+    squad_examples = create_squad_examples(raw_data, desc, tokenizer)
+    X, y = create_inputs_targets(squad_examples)
+    tensor_data = TensorDataset(
+        torch.tensor(X[0], dtype=torch.int64),
+        torch.tensor(X[1], dtype=torch.float),
+        torch.tensor(X[2], dtype=torch.int64),
+        torch.tensor(y[0], dtype=torch.int64),
+        torch.tensor(y[1], dtype=torch.int64),
+        torch.tensor(y[2], dtype=torch.int64),
+    )
+    return tensor_data

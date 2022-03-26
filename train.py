@@ -1,5 +1,4 @@
 import os
-import re
 import sys
 import json
 import argparse
@@ -7,23 +6,23 @@ import argparse
 import numpy as np
 from tqdm import tqdm
 from colorama import Fore
+from transformers import BertTokenizer
 from tokenizers import BertWordPieceTokenizer
-from transformers import BertTokenizer, BertForQuestionAnswering
 import torch
 from torch import nn
 from torch.utils.data import TensorDataset, DataLoader, RandomSampler, SequentialSampler
+from torch.utils.tensorboard import SummaryWriter
 
 from data_utils import (
-    Sample,
     create_squad_examples,
     create_inputs_targets,
     normalize_text,
     download_dataset,
+    load_dataset_as_tensors,
 )
 from settings import (
     GPU_ID,
     EPOCHS,
-    MAX_SEQ_LENGTH,
     BATCH_SIZE,
     CROSS_ENTROPY_IGNORE_INDEX,
     MODEL_NAME,
@@ -46,9 +45,7 @@ if __name__ == "__main__":
         help="Use the model further PT on quran.",
     )
     parser.add_argument(
-        "--seed",
-        default=0,
-        help="The value of the random seed to use.",
+        "--seed", default=0, help="The value of the random seed to use.",
     )
     parser.add_argument(
         "--dropout_p",
@@ -60,6 +57,9 @@ if __name__ == "__main__":
 
     # Try setting the seed
     torch.manual_seed(args.seed)
+
+    writer = SummaryWriter(log_dir="training_logs")
+    # writer.add_scalar('Loss/train', np.random.random(), global_step=n_iter)
 
     model_name = MODEL_NAME
     # Use the model that was fine-tuned for NER
@@ -75,49 +75,28 @@ if __name__ == "__main__":
     # Download the data from the repository
     download_dataset()
 
-    # Load the data into list of dictionaries
-    with open("data/train_ar.jsonl") as f:
-        raw_train_data = [json.loads(l) for l in f]
-    with open("data/eval_ar.jsonl") as f:
-        raw_eval_data = [json.loads(l) for l in f]
-
     # Make the tokenization faster
     slow_tokenizer = BertTokenizer.from_pretrained(model_name)
+    # TODO: Rename the directory
     if not os.path.exists(f"{model_name}_/"):
         os.makedirs(f"{model_name}_/")
     slow_tokenizer.save_pretrained(f"{model_name}_/")
     tokenizer = BertWordPieceTokenizer(f"{model_name}_/vocab.txt", lowercase=True)
 
     # Organize the dataset into tensors
-    train_squad_examples = create_squad_examples(
-        raw_train_data, "Creating training points", tokenizer
+    train_data = load_dataset_as_tensors(
+        "data/train_ar.jsonl", "Creating training points", tokenizer
     )
-    x_train, y_train = create_inputs_targets(train_squad_examples)
-    eval_squad_examples = create_squad_examples(
-        raw_eval_data, "Creating evaluation points", tokenizer
+    eval_data = load_dataset_as_tensors(
+        "data/eval_ar.jsonl", "Creating eval points", tokenizer
     )
-    x_eval, y_eval = create_inputs_targets(eval_squad_examples)
-    train_data = TensorDataset(
-        torch.tensor(x_train[0], dtype=torch.int64),
-        torch.tensor(x_train[1], dtype=torch.float),
-        torch.tensor(x_train[2], dtype=torch.int64),
-        torch.tensor(y_train[0], dtype=torch.int64),
-        torch.tensor(y_train[1], dtype=torch.int64),
-        torch.tensor(y_train[2], dtype=torch.int64),
-    )
+
     print(f"{len(train_data)} training points created.")
     train_sampler = RandomSampler(train_data)
     train_data_loader = DataLoader(
         train_data, sampler=train_sampler, batch_size=BATCH_SIZE
     )
-    eval_data = TensorDataset(
-        torch.tensor(x_eval[0], dtype=torch.int64),
-        torch.tensor(x_eval[1], dtype=torch.float),
-        torch.tensor(x_eval[2], dtype=torch.int64),
-        torch.tensor(y_eval[0], dtype=torch.int64),
-        torch.tensor(y_eval[1], dtype=torch.int64),
-        torch.tensor(y_eval[2], dtype=torch.int64),
-    )
+
     print(f"{len(eval_data)} evaluation points created.")
     eval_sampler = SequentialSampler(eval_data)
     validation_data_loader = DataLoader(eval_data, sampler=eval_sampler, batch_size=1)
@@ -128,6 +107,8 @@ if __name__ == "__main__":
         model_name, dropout_p=args.dropout_p, use_TAPT=args.use_TAPT
     )
     model = model.to(device=GPU_ID)
+
+    # Prepare optimizer
     param_optimizer = list(model.named_parameters())
     no_decay = ["bias", "gamma", "beta"]
     optimizer_grouped_parameters = [
@@ -149,8 +130,10 @@ if __name__ == "__main__":
         lr=1e-5, betas=(0.9, 0.98), eps=1e-9, params=optimizer_grouped_parameters
     )
 
+    #
     ner_loss = nn.CrossEntropyLoss()
 
+    cur_step = 0
     for epoch in range(1, EPOCHS + 1):
         print("Training epoch ", str(epoch))
         training_pbar = tqdm(
@@ -197,7 +180,10 @@ if __name__ == "__main__":
             if len(end_token_idx.size()) > 1:
                 end_token_idx = end_token_idx.squeeze(-1)
             # sometimes the start/end positions are outside our model inputs, we ignore these terms
+
             ignored_index = start_logits.size(1)
+            # print("Ignored index of cross entropy", ignored_index)
+
             start_token_idx = start_token_idx.clamp(0, ignored_index)
             end_token_idx = end_token_idx.clamp(0, ignored_index)
 
@@ -206,6 +192,10 @@ if __name__ == "__main__":
             end_loss = loss_fct(end_logits, end_token_idx)
             total_loss = (start_loss + end_loss) / 2
             loss = total_loss + ner_loss
+
+            writer.add_scalar("Loss/QA", total_loss.item(), cur_step)
+            writer.add_scalar("Loss/NER", ner_loss.item(), cur_step)
+            cur_step += 1
 
             loss.backward()
             optimizer.step()

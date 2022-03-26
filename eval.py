@@ -7,17 +7,18 @@ import sys
 sys.path.append("../")
 sys.path.append("../quranqa/code/")
 
-import requests
-import string
 import numpy as np
 from colorama import Fore
 from tokenizers import BertWordPieceTokenizer
 from tqdm import tqdm
-from transformers import BertTokenizer
 import torch
-from torch.utils.data import TensorDataset, DataLoader, RandomSampler, SequentialSampler
+from torch.utils.data import DataLoader, SequentialSampler
 from settings import GPU_ID, MODEL_NAME, EPOCHS
-from data_utils import create_squad_examples, create_inputs_targets
+from data_utils import (
+    create_squad_examples,
+    create_inputs_targets,
+    load_dataset_as_tensors,
+)
 from quranqa.code.quranqa22_eval import (
     normalize_text,
     remove_prefixes,
@@ -34,9 +35,7 @@ logger = logging.getLogger("Eval")
 parser = argparse.ArgumentParser(description="Evaluate the models.")
 parser.add_argument("--train", action="store_true")
 parser.add_argument(
-    "--seed",
-    default=0,
-    help="The value of the random seed to use.",
+    "--seed", default=0, help="The value of the random seed to use.",
 )
 parser.add_argument(
     "--epoch",
@@ -57,28 +56,18 @@ if args.train:
 else:
     datafile = "data/eval_ar.jsonl"
 
+# Load the tokenizer
+tokenizer = BertWordPieceTokenizer(f"{MODEL_NAME}_/vocab.txt", lowercase=True)
+
+# Load the data
 with open(datafile, "r") as f:
     raw_eval_data = [json.loads(l) for l in f]
-
-
-tokenizer = BertWordPieceTokenizer(f"{MODEL_NAME}_/vocab.txt", lowercase=True)
-# ============================================= PREPARING DATASET ======================================================
-eval_squad_examples = create_squad_examples(
-    raw_eval_data, "Creating evaluation points", tokenizer
-)
-x_eval, y_eval = create_inputs_targets(eval_squad_examples)
-eval_data = TensorDataset(
-    torch.tensor(x_eval[0], dtype=torch.int64),
-    torch.tensor(x_eval[1], dtype=torch.float),
-    torch.tensor(x_eval[2], dtype=torch.int64),
-    torch.tensor(y_eval[0], dtype=torch.int64),
-    torch.tensor(y_eval[1], dtype=torch.int64),
-)
+eval_data = load_dataset_as_tensors(datafile, tokenizer, "Loading data")
 print(f"{len(eval_data)} evaluation points created.")
 eval_sampler = SequentialSampler(eval_data)
 validation_data_loader = DataLoader(eval_data, sampler=eval_sampler, batch_size=1)
 
-# ============================================ TESTING =================================================================
+# Load the trained model
 model = MultiTaskQAModel(MODEL_NAME, use_TAPT=args.use_TAPT).to(device=GPU_ID)
 model.load_state_dict(
     torch.load(f"checkpoints/weights_{args.desc}_seed_{args.seed}_{args.epoch}.pth")
