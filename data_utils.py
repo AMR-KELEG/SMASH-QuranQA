@@ -150,22 +150,25 @@ def create_squad_examples(raw_data, desc, tokenizer):
         context = line["passage"]
         question = line["question"]
         # TODO: Handle if answers aren't there
-        if line["answers"]:
-            all_answers = line["answers"]
-            answer_text = all_answers[0]["text"]
-            start_char_idx = all_answers[0]["start_char"]
-            squad_eg = Sample(
-                question,
-                context,
-                start_char_idx,
-                answer_text,
-                all_answers,
-                question_id=question_id,
-            )
-        else:
+        if not line["answers"]:
             squad_eg = Sample(question, context, question_id=question_id)
-        squad_eg.preprocess(tokenizer)
-        squad_examples.append(squad_eg)
+            squad_eg.preprocess(tokenizer)
+            squad_examples.append(squad_eg)
+        else:
+            for cur_answer in line["answers"]:
+                all_answers = line["answers"]
+                answer_text = cur_answer["text"]
+                start_char_idx = cur_answer["start_char"]
+                squad_eg = Sample(
+                    question,
+                    context,
+                    start_char_idx,
+                    answer_text,
+                    all_answers,
+                    question_id=question_id,
+                )
+                squad_eg.preprocess(tokenizer)
+                squad_examples.append(squad_eg)
         p_bar.update(1)
     p_bar.close()
     return squad_examples
