@@ -40,7 +40,15 @@ if __name__ == "__main__":
         help="Use the model fine-tuned for NER.",
     )
     parser.add_argument(
-        "--seed", default=0, help="The value of the random seed to use.",
+        "--use_TAPT",
+        default=False,
+        action="store_true",
+        help="Use the model further PT on quran.",
+    )
+    parser.add_argument(
+        "--seed",
+        default=0,
+        help="The value of the random seed to use.",
     )
     parser.add_argument(
         "--dropout_p",
@@ -97,7 +105,7 @@ if __name__ == "__main__":
         torch.tensor(y_train[1], dtype=torch.int64),
         torch.tensor(y_train[2], dtype=torch.int64),
     )
-    logger.info(f"{len(train_data)} training points created.")
+    print(f"{len(train_data)} training points created.")
     train_sampler = RandomSampler(train_data)
     train_data_loader = DataLoader(
         train_data, sampler=train_sampler, batch_size=BATCH_SIZE
@@ -110,13 +118,15 @@ if __name__ == "__main__":
         torch.tensor(y_eval[1], dtype=torch.int64),
         torch.tensor(y_eval[2], dtype=torch.int64),
     )
-    logger.info(f"{len(eval_data)} evaluation points created.")
+    print(f"{len(eval_data)} evaluation points created.")
     eval_sampler = SequentialSampler(eval_data)
     validation_data_loader = DataLoader(eval_data, sampler=eval_sampler, batch_size=1)
 
     # TODO: Continue pretraining
     # https://huggingface.co/docs/transformers/model_doc/bert#transformers.BertForPreTraining
-    model = MultiTaskQAModel(model_name, dropout_p=args.dropout_p)
+    model = MultiTaskQAModel(
+        model_name, dropout_p=args.dropout_p, use_TAPT=args.use_TAPT
+    )
     model = model.to(device=GPU_ID)
     param_optimizer = list(model.named_parameters())
     no_decay = ["bias", "gamma", "beta"]
@@ -142,7 +152,7 @@ if __name__ == "__main__":
     ner_loss = nn.CrossEntropyLoss()
 
     for epoch in range(1, EPOCHS + 1):
-        logger.info("Training epoch ", str(epoch))
+        print("Training epoch ", str(epoch))
         training_pbar = tqdm(
             total=len(train_data),
             position=0,
@@ -269,4 +279,4 @@ if __name__ == "__main__":
             validation_pbar.update(input_word_ids.size(0))
         acc = count / len(y_eval[0])
         validation_pbar.close()
-        logger.info(f"\nEpoch={epoch}, exact match score={acc:.2f}")
+        print(f"\nEpoch={epoch}, exact match score={acc:.2f}, training loss: {tr_loss}")
