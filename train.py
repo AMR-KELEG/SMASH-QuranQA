@@ -40,9 +40,7 @@ if __name__ == "__main__":
         help="Use the model fine-tuned for NER.",
     )
     parser.add_argument(
-        "--seed",
-        default=0,
-        help="The value of the random seed to use.",
+        "--seed", default=0, help="The value of the random seed to use.",
     )
     parser.add_argument(
         "--dropout_p",
