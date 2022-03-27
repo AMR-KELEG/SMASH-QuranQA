@@ -291,3 +291,19 @@ def load_dataset_as_tensors(datafile, desc, tokenizer):
         torch.tensor(y[2], dtype=torch.int64),
     )
     return tensor_data
+
+
+def load_samples_as_tensors(raw_data, desc, tokenizer):
+    squad_examples = create_squad_examples(raw_data, desc, tokenizer)
+    X, _ = create_inputs_targets(squad_examples)
+    # tensor_data = TensorDataset(
+    #     torch.tensor(X[0], dtype=torch.int64),
+    #     torch.tensor(X[1], dtype=torch.float),
+    #     torch.tensor(X[2], dtype=torch.int64),
+    # )
+    # return tensor_data
+    return (
+        torch.tensor(X[0], dtype=torch.int64),
+        torch.tensor(X[1], dtype=torch.float),
+        torch.tensor(X[2], dtype=torch.int64),
+    )

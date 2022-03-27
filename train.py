@@ -30,6 +30,14 @@ from settings import (
 import logging
 from model import MultiTaskQAModel
 
+# TODO: Fix this!
+sys.path.append("../")
+sys.path.append("../quranqa/code/")
+
+from quranqa.code.quranqa22_eval import (
+    pRR_max_over_ground_truths,
+)
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train BERT on QA.")
     parser.add_argument(
@@ -45,7 +53,9 @@ if __name__ == "__main__":
         help="Use the model further PT on quran.",
     )
     parser.add_argument(
-        "--seed", default=0, help="The value of the random seed to use.",
+        "--seed",
+        default=0,
+        help="The value of the random seed to use.",
     )
     parser.add_argument(
         "--dropout_p",
@@ -90,6 +100,9 @@ if __name__ == "__main__":
     eval_data = load_dataset_as_tensors(
         "data/eval_ar.jsonl", "Creating eval points", tokenizer
     )
+    with open("data/eval_ar.jsonl", "r") as f:
+        raw_eval_data = [json.loads(l) for l in f]
+    eval_squad_examples = create_squad_examples(raw_eval_data, "", tokenizer)
 
     print(f"{len(train_data)} training points created.")
     train_sampler = RandomSampler(train_data)
@@ -134,6 +147,7 @@ if __name__ == "__main__":
     ner_loss = nn.CrossEntropyLoss()
 
     cur_step = 0
+    eval_step = 0
     for epoch in range(1, EPOCHS + 1):
         print("Training epoch ", str(epoch))
         training_pbar = tqdm(
@@ -191,10 +205,10 @@ if __name__ == "__main__":
             start_loss = loss_fct(start_logits, start_token_idx)
             end_loss = loss_fct(end_logits, end_token_idx)
             total_loss = (start_loss + end_loss) / 2
-            loss = total_loss + ner_loss
+            loss = 0.99 * total_loss + 0.01 * ner_loss
 
-            writer.add_scalar("Loss/QA", total_loss.item(), cur_step)
-            writer.add_scalar("Loss/NER", ner_loss.item(), cur_step)
+            writer.add_scalar("Training loss/QA", total_loss.item(), cur_step)
+            writer.add_scalar("Training loss/NER", ner_loss.item(), cur_step)
             cur_step += 1
 
             loss.backward()
@@ -202,6 +216,7 @@ if __name__ == "__main__":
             tr_loss += loss.item()
             nb_tr_steps += 1
             training_pbar.update(input_word_ids.size(0))
+
         training_pbar.close()
         torch.save(
             model.state_dict(),
@@ -217,8 +232,8 @@ if __name__ == "__main__":
             bar_format="{l_bar}%s{bar}%s{r_bar}" % (Fore.BLUE, Fore.RESET),
         )
         model.eval()
-        eval_examples_no_skip = [_ for _ in eval_squad_examples if _.skip is False]
         currentIdx = 0
+
         count = 0
         for batch in validation_data_loader:
             batch = tuple(t.to(GPU_ID) for t in batch)
@@ -236,23 +251,38 @@ if __name__ == "__main__":
                     attention_mask=input_mask,
                     token_type_ids=input_type_ids,
                 )
+                ner_loss_fct = nn.CrossEntropyLoss(
+                    ignore_index=CROSS_ENTROPY_IGNORE_INDEX
+                )
+                ner_loss = ner_loss_fct(outputs[2].view(-1, 2), ner_labels.view(-1))
 
                 start_logits, end_logits = outputs[1].split(1, dim=-1)
                 start_logits = start_logits.squeeze(-1).contiguous()
                 end_logits = end_logits.squeeze(-1).contiguous()
+
+                loss_fct = nn.CrossEntropyLoss(ignore_index=ignored_index)
+                start_loss = loss_fct(start_logits, start_token_idx)
+                end_loss = loss_fct(end_logits, end_token_idx)
+                total_loss = (start_loss + end_loss) / 2
+                writer.add_scalar("Evaluation loss/QA", total_loss.item(), eval_step)
+                writer.add_scalar("Evaluation loss/NER", ner_loss.item(), eval_step)
 
                 pred_start, pred_end = (
                     start_logits.detach().cpu().numpy(),
                     end_logits.detach().cpu().numpy(),
                 )
 
+            # Compute evaluation metrics (e.g.: EM)
+            pRRs = []
             for idx, (start, end) in enumerate(zip(pred_start, pred_end)):
-                qa_sample = eval_examples_no_skip[currentIdx]
+                qa_sample = eval_squad_examples[currentIdx]
                 currentIdx += 1
                 offsets = qa_sample.context_token_to_char
                 start = np.argmax(start)
                 end = np.argmax(end)
                 if start >= len(offsets):
+                    # TODO: There is a problem here?!
+                    pRRs.append(0)
                     continue
                 pred_char_start = offsets[start][0]
                 if end < len(offsets):
@@ -260,13 +290,27 @@ if __name__ == "__main__":
                     pred_ans = qa_sample.context[pred_char_start:pred_char_end]
                 else:
                     pred_ans = qa_sample.context[pred_char_start:]
+
+                # TODO: Compute the right metrics
+                pRR = pRR_max_over_ground_truths(
+                    [pred_ans],
+                    [[0]],
+                    [{"text": a["text"]} for a in qa_sample.all_answers],
+                )
+                pRRs.append(pRR)
+
                 normalized_pred_ans = normalize_text(pred_ans)
                 normalized_true_ans = [
                     normalize_text(_["text"]) for _ in qa_sample.all_answers
                 ]
+                # Change the EM to use the repo's code!
                 if normalized_pred_ans in normalized_true_ans:
                     count += 1
+            avg_pRR = sum(pRRs) / len(pRRs)
+            writer.add_scalar("Evaluation pRR", avg_pRR, eval_step)
+            eval_step += 1
             validation_pbar.update(input_word_ids.size(0))
-        acc = count / len(y_eval[0])
+        acc = count / len(eval_squad_examples)
         validation_pbar.close()
         print(f"\nEpoch={epoch}, exact match score={acc:.2f}, training loss: {tr_loss}")
+    writer.close()

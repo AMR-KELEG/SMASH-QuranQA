@@ -18,6 +18,7 @@ from data_utils import (
     create_squad_examples,
     create_inputs_targets,
     load_dataset_as_tensors,
+    load_samples_as_tensors,
 )
 from quranqa.code.quranqa22_eval import (
     normalize_text,
@@ -35,7 +36,9 @@ logger = logging.getLogger("Eval")
 parser = argparse.ArgumentParser(description="Evaluate the models.")
 parser.add_argument("--train", action="store_true")
 parser.add_argument(
-    "--seed", default=0, help="The value of the random seed to use.",
+    "--seed",
+    default=0,
+    help="The value of the random seed to use.",
 )
 parser.add_argument(
     "--epoch",
@@ -62,10 +65,6 @@ tokenizer = BertWordPieceTokenizer(f"{MODEL_NAME}_/vocab.txt", lowercase=True)
 # Load the data
 with open(datafile, "r") as f:
     raw_eval_data = [json.loads(l) for l in f]
-eval_data = load_dataset_as_tensors(datafile, tokenizer, "Loading data")
-print(f"{len(eval_data)} evaluation points created.")
-eval_sampler = SequentialSampler(eval_data)
-validation_data_loader = DataLoader(eval_data, sampler=eval_sampler, batch_size=1)
 
 # Load the trained model
 model = MultiTaskQAModel(MODEL_NAME, use_TAPT=args.use_TAPT).to(device=GPU_ID)
@@ -82,68 +81,67 @@ wrong_answers = []
 
 for i in range(0, len(raw_eval_data), 1):
     batch_data = raw_eval_data[i : i + 1]
-    test_samples = create_squad_examples(
-        batch_data, f"Creating test points for batch #{i}", tokenizer
-    )
-    # TODO: Fix this!
-    x_test, y_test = create_inputs_targets(test_samples)
+    (
+        input_word_ids,
+        input_mask,
+        input_type_ids,
+    ) = load_samples_as_tensors(batch_data, "Loading sample", tokenizer)
     outputs = model(
-        torch.tensor(x_test[0], dtype=torch.int64, device=GPU_ID),
-        torch.tensor(x_test[1], dtype=torch.float, device=GPU_ID),
-        torch.tensor(x_test[2], dtype=torch.int64, device=GPU_ID),
+        input_ids=input_word_ids.to(GPU_ID),
+        attention_mask=input_mask.to(GPU_ID),
+        token_type_ids=input_type_ids.to(GPU_ID),
     )
 
     start_logits, end_logits = outputs[1].split(1, dim=-1)
-    start_logits = start_logits.squeeze(-1).contiguous()
-    end_logits = end_logits.squeeze(-1).contiguous()
 
+    start_logits = start_logits.squeeze(-1)
+    end_logits = end_logits.squeeze(-1)
     pred_start, pred_end = (
         start_logits.detach().cpu().numpy(),
         end_logits.detach().cpu().numpy(),
     )
 
-    for idx, (start, end) in enumerate(zip(pred_start, pred_end)):
-        test_sample = test_samples[idx]
-        try:
-            offsets = test_sample.context_token_to_char
-        except:
-            # TODO: This is a hack added by Amr!
-            # Investigate the reason for this!
-            offsets = []
+    test_sample = create_squad_examples(batch_data, "Sample", tokenizer)[0]
+    try:
+        offsets = test_sample.context_token_to_char
+    except:
+        # TODO: This is a hack added by Amr!
+        # Investigate the reason for this!
+        offsets = []
 
-        start = np.argmax(start)
-        end = np.argmax(end)
+    start = np.argmax(pred_start)
+    end = np.argmax(pred_end)
 
-        pred_char_start = offsets[start][0]
-        if end < len(offsets):
-            pred_ans = test_sample.context[pred_char_start : offsets[end][1]]
-        else:
-            pred_ans = test_sample.context[pred_char_start:]
+    pred_char_start = offsets[start][0]
+    if end < len(offsets) and end >=start:
+        pred_ans = test_sample.context[pred_char_start : offsets[end][1]]
+    else:
+        pred_ans = test_sample.context[pred_char_start:]
 
-        prr = pRR_max_over_ground_truths(
-            [pred_ans, test_sample.context],
-            [[pred_char_start], [0]],
-            [{"text": a["text"]} for a in test_sample.all_answers],
+    prr = pRR_max_over_ground_truths(
+        [pred_ans, test_sample.context],
+        [[pred_char_start], [0]],
+        [{"text": a["text"]} for a in test_sample.all_answers],
+    )
+
+    answers.append(pred_ans)
+    ids.append(test_sample.question_id)
+    full_text_answers.append(test_sample.context)
+    prrs.append(prr)
+
+    cleaned_pred = normalize_text(remove_prefixes(pred_ans))
+    cleaned_ans = normalize_text(remove_prefixes(test_sample.answer_text))
+    if cleaned_ans != cleaned_pred:
+        wrong_answers.append(
+            {
+                "answer": cleaned_pred,
+                "question": test_sample.question,
+                "correct_answer": cleaned_ans,
+                "pRR": round(prr, 5),
+                "type": find_interrogatives(test_sample.question),
+                "context": test_sample.context,
+            }
         )
-
-        answers.append(pred_ans)
-        ids.append(test_sample.question_id)
-        full_text_answers.append(test_sample.context)
-        prrs.append(prr)
-
-        cleaned_pred = normalize_text(remove_prefixes(pred_ans))
-        cleaned_ans = normalize_text(remove_prefixes(test_sample.answer_text))
-        if cleaned_ans != cleaned_pred:
-            wrong_answers.append(
-                {
-                    "answer": cleaned_pred,
-                    "question": test_sample.question,
-                    "correct_answer": cleaned_ans,
-                    "pRR": round(prr, 5),
-                    "type": find_interrogatives(test_sample.question),
-                    "context": test_sample.context,
-                }
-            )
 
 wrong_answers = sorted(wrong_answers, key=lambda d: d["type"])
 
@@ -181,3 +179,10 @@ with open("data/smash_run01.json", "w") as f:
         for id, answer, full_answer in zip(ids, answers, full_text_answers)
     }
     json.dump(submission, f, ensure_ascii=False)
+
+with open(f"data/debug_{'train' if args.train else 'dev'}.jsonl", "w") as f:
+    for s, a, prr in zip(raw_eval_data, answers, prrs):
+        s["pred"] = a
+        s["pRR"] = prr
+        f.write(json.dumps(s, ensure_ascii=False))
+        f.write("\n")
