@@ -34,7 +34,12 @@ from model import MultiTaskQAModel
 logger = logging.getLogger("Eval")
 
 parser = argparse.ArgumentParser(description="Evaluate the models.")
-parser.add_argument("--train", action="store_true")
+parser.add_argument(
+    "--train", action="store_true", help="Run evaluation on the training data."
+)
+parser.add_argument(
+    "--test", action="store_true", help="Run evaluation on the testing data."
+)
 parser.add_argument(
     "--seed",
     default=0,
@@ -60,7 +65,9 @@ parser.add_argument(
 parser.add_argument("--desc", required=True, help="The description of the model.")
 args = parser.parse_args()
 
-if args.train:
+if args.test:
+    datafile = "data/test.jsonl"
+elif args.train:
     datafile = "data/train_ar.jsonl"
 else:
     datafile = "data/eval_ar.jsonl"
@@ -87,11 +94,9 @@ wrong_answers = []
 
 for i in range(0, len(raw_eval_data), 1):
     batch_data = raw_eval_data[i : i + 1]
-    (
-        input_word_ids,
-        input_mask,
-        input_type_ids,
-    ) = load_samples_as_tensors(batch_data, "Loading sample", tokenizer, question_first=args.question_first)
+    (input_word_ids, input_mask, input_type_ids,) = load_samples_as_tensors(
+        batch_data, "Loading sample", tokenizer, question_first=args.question_first
+    )
     outputs = model(
         input_ids=input_word_ids.to(GPU_ID),
         attention_mask=input_mask.to(GPU_ID),
@@ -107,7 +112,9 @@ for i in range(0, len(raw_eval_data), 1):
         end_logits.detach().cpu().numpy(),
     )
 
-    test_sample = create_squad_examples(batch_data, "Sample", tokenizer, question_first=args.question_first)[0]
+    test_sample = create_squad_examples(
+        batch_data, "Sample", tokenizer, question_first=args.question_first
+    )[0]
     try:
         offsets = test_sample.context_token_to_char
     except:
@@ -118,49 +125,61 @@ for i in range(0, len(raw_eval_data), 1):
     start = np.argmax(pred_start)
     end = np.argmax(pred_end)
 
+    # Placeholder for strange start indecies
+    if start >= len(offsets):
+        print("Fallback for start!")
+        start = 0
+
     pred_char_start = offsets[start][0]
     if end < len(offsets) and end >= start:
         pred_ans = test_sample.context[pred_char_start : offsets[end][1]]
     else:
         pred_ans = test_sample.context[pred_char_start:]
 
-    prr = pRR_max_over_ground_truths(
-        [pred_ans, test_sample.context],
-        [[pred_char_start], [0]],
-        [{"text": a["text"]} for a in test_sample.all_answers],
-    )
+    # Compute pRR stats if answers are there
+    if test_sample.all_answers:
+        prr = pRR_max_over_ground_truths(
+            [pred_ans, test_sample.context],
+            [[pred_char_start], [0]],
+            [{"text": a["text"]} for a in test_sample.all_answers],
+        )
+        # TODO: Get rid of this part
+        cleaned_pred = normalize_text(remove_prefixes(pred_ans))
+        cleaned_ans = normalize_text(remove_prefixes(test_sample.answer_text))
+        if cleaned_ans != cleaned_pred:
+            wrong_answers.append(
+                {
+                    "answer": cleaned_pred,
+                    "question": test_sample.question,
+                    "correct_answer": cleaned_ans,
+                    "pRR": round(prr, 5),
+                    "type": find_interrogatives(test_sample.question),
+                    "context": test_sample.context,
+                }
+            )
+
+            wrong_answers = sorted(wrong_answers, key=lambda d: d["type"])
+
+            for k, v in groupby(wrong_answers, key=lambda a: a["type"]):
+                typed_wrong_answers = sorted(list(v), key=lambda a: a["pRR"])
+                print(40 * "*")
+                print(k, len(typed_wrong_answers))
+                print(40 * "*")
+                print(
+                    round(np.mean([a["pRR"] for a in typed_wrong_answers]), 2),
+                    "±",
+                    round(np.std([a["pRR"] for a in typed_wrong_answers]), 2),
+                )
+
+    else:
+        # Just a placeholder for values!
+        prr = 0
 
     answers.append(pred_ans)
     ids.append(test_sample.question_id)
     full_text_answers.append(test_sample.context)
     prrs.append(prr)
 
-    cleaned_pred = normalize_text(remove_prefixes(pred_ans))
-    cleaned_ans = normalize_text(remove_prefixes(test_sample.answer_text))
-    if cleaned_ans != cleaned_pred:
-        wrong_answers.append(
-            {
-                "answer": cleaned_pred,
-                "question": test_sample.question,
-                "correct_answer": cleaned_ans,
-                "pRR": round(prr, 5),
-                "type": find_interrogatives(test_sample.question),
-                "context": test_sample.context,
-            }
-        )
-
-wrong_answers = sorted(wrong_answers, key=lambda d: d["type"])
-
-for k, v in groupby(wrong_answers, key=lambda a: a["type"]):
-    typed_wrong_answers = sorted(list(v), key=lambda a: a["pRR"])
-    print(40 * "*")
-    print(k, len(typed_wrong_answers))
-    print(40 * "*")
-    print(
-        round(np.mean([a["pRR"] for a in typed_wrong_answers]), 2),
-        "±",
-        round(np.std([a["pRR"] for a in typed_wrong_answers]), 2),
-    )
 
 if False and input("print questions? [y]/n: ") != "n":
     for k, v in groupby(wrong_answers, key=lambda a: a["type"]):
@@ -186,7 +205,9 @@ with open("data/smash_run01.json", "w") as f:
     }
     json.dump(submission, f, ensure_ascii=False)
 
-with open(f"data/debug_{'train' if args.train else 'dev'}.jsonl", "w") as f:
+with open(
+    f"data/debug_{'test' if args.test else 'train' if args.train else 'dev'}.jsonl", "w"
+) as f:
     for s, a, prr in zip(raw_eval_data, answers, prrs):
         s["pred"] = a
         s["pRR"] = prr
