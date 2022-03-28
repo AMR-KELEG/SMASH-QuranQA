@@ -46,6 +46,12 @@ parser.add_argument(
     help="The value of the epoch at which the checkpoint was generated.",
 )
 parser.add_argument(
+    "--question_first",
+    default=False,
+    action="store_true",
+    help="Use question as segment A, and passage as segment B",
+)
+parser.add_argument(
     "--use_TAPT",
     default=False,
     action="store_true",
@@ -85,7 +91,7 @@ for i in range(0, len(raw_eval_data), 1):
         input_word_ids,
         input_mask,
         input_type_ids,
-    ) = load_samples_as_tensors(batch_data, "Loading sample", tokenizer)
+    ) = load_samples_as_tensors(batch_data, "Loading sample", tokenizer, question_first=args.question_first)
     outputs = model(
         input_ids=input_word_ids.to(GPU_ID),
         attention_mask=input_mask.to(GPU_ID),
@@ -101,7 +107,7 @@ for i in range(0, len(raw_eval_data), 1):
         end_logits.detach().cpu().numpy(),
     )
 
-    test_sample = create_squad_examples(batch_data, "Sample", tokenizer)[0]
+    test_sample = create_squad_examples(batch_data, "Sample", tokenizer, question_first=args.question_first)[0]
     try:
         offsets = test_sample.context_token_to_char
     except:
@@ -113,7 +119,7 @@ for i in range(0, len(raw_eval_data), 1):
     end = np.argmax(pred_end)
 
     pred_char_start = offsets[start][0]
-    if end < len(offsets) and end >=start:
+    if end < len(offsets) and end >= start:
         pred_ans = test_sample.context[pred_char_start : offsets[end][1]]
     else:
         pred_ans = test_sample.context[pred_char_start:]
