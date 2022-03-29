@@ -109,19 +109,21 @@ if __name__ == "__main__":
     train_splits, dev_splits = [], []
     filenames = [
         "non_leakage_indomain",
-        "total_ood",
         "context_ood",
         "non_leakage_indomain",
+        "total_ood",
     ]
     dfs = [
         non_leakage_indomain_df,
-        total_ood_df,
         context_ood_df,
         non_leakage_indomain_df,
+        total_ood_df,
     ]
-    for typed_df, filename in zip(dfs, filenames):
+    for typed_df, filename in zip(dfs[:-1], filenames[:-1]):
         t_split, d_split = get_normal_split(
             typed_df.drop(["passage_answer", "question_answer"], axis=1), dev_percentage
         )
         dump_to_file(t_split, "train", filename)
         dump_to_file(d_split, "eval", filename)
+
+    dump_to_file(dfs[-1], "eval", filenames[-1])
