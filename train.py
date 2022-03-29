@@ -62,6 +62,12 @@ if __name__ == "__main__":
         default=0,
         help="The value of the dropout probability after BERT.",
     )
+    parser.add_argument(
+        "--question_first",
+        default=False,
+        action="store_true",
+        help="Use question as segment A, and passage as segment B",
+    )
     parser.add_argument("--desc", required=True, help="The description of the model.")
     args = parser.parse_args()
 
@@ -95,14 +101,19 @@ if __name__ == "__main__":
 
     # Organize the dataset into tensors
     train_data = load_dataset_as_tensors(
-        "data/train_ar.jsonl", "Creating training points", tokenizer
+        "data/train_ar.jsonl",
+        "Creating training points",
+        tokenizer,
+        args.question_first,
     )
     eval_data = load_dataset_as_tensors(
-        "data/eval_ar.jsonl", "Creating eval points", tokenizer
+        "data/eval_ar.jsonl", "Creating eval points", tokenizer, args.question_first
     )
     with open("data/eval_ar.jsonl", "r") as f:
         raw_eval_data = [json.loads(l) for l in f]
-    eval_squad_examples = create_squad_examples(raw_eval_data, "", tokenizer)
+    eval_squad_examples = create_squad_examples(
+        raw_eval_data, "", tokenizer, args.question_first
+    )
 
     print(f"{len(train_data)} training points created.")
     train_sampler = RandomSampler(train_data)
@@ -235,6 +246,7 @@ if __name__ == "__main__":
         currentIdx = 0
 
         count = 0
+        all_pRRs = []
         for batch in validation_data_loader:
             batch = tuple(t.to(GPU_ID) for t in batch)
             (
@@ -307,10 +319,13 @@ if __name__ == "__main__":
                 if normalized_pred_ans in normalized_true_ans:
                     count += 1
             avg_pRR = sum(pRRs) / len(pRRs)
+            all_pRRs += pRRs
             writer.add_scalar("Evaluation pRR", avg_pRR, eval_step)
             eval_step += 1
             validation_pbar.update(input_word_ids.size(0))
         acc = count / len(eval_squad_examples)
         validation_pbar.close()
-        print(f"\nEpoch={epoch}, exact match score={acc:.2f}, training loss: {tr_loss}")
+        print(
+            f"\nEpoch={epoch}, exact match score={acc:.2f}, pRR={sum(all_pRRs) / len(all_pRRs):.2f}, training loss: {tr_loss}"
+        )
     writer.close()

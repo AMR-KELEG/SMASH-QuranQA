@@ -54,7 +54,7 @@ class Sample:
         self.end_token_idx = -1
         self.question_id = question_id
 
-    def preprocess(self, tokenizer, use_multiple_answers=False):
+    def preprocess(self, tokenizer, use_multiple_answers=False, question_first=False):
         if not tokenizer:
             return None
 
@@ -92,24 +92,37 @@ class Sample:
             self.start_token_idx = ans_token_idx[0]
             self.end_token_idx = ans_token_idx[-1]
 
-            # TODO: Does the order matter? (i.e. Context, Question or Question, Context)
-            # Assign ner labels to the tokens in both the context and the question
-            self.ner_labels = (
-                get_ner_labels(context, tokenized_context, persons_mentions_context)
-                + get_ner_labels(
-                    question, tokenized_question, persons_mentions_question
-                )[1:]
-            )
-
-        # Keeps ids of context and drop [CLS] from question
-        # Both has [SEP] at the end which is desired
-        input_ids = tokenized_context.ids + tokenized_question.ids[1:]
-        # Form the segment ids
-        token_type_ids = [0] * len(tokenized_context.ids) + [1] * len(
-            tokenized_question.ids[1:]
+        # Assign ner labels to the tokens in both the context and the question
+        context_ner_labels = get_ner_labels(
+            context, tokenized_context, persons_mentions_context
         )
-        # Attend to all these tokens
-        attention_mask = [1] * len(input_ids)
+        question_ner_labels = get_ner_labels(
+            question, tokenized_question, persons_mentions_question
+        )
+
+        # TODO: Does the order matter? (i.e. Context, Question or Question, Context)
+        if question_first:
+            # Keeps ids of context and drop [CLS] from question
+            # Both has [SEP] at the end which is desired
+            input_ids = tokenized_question.ids + tokenized_context.ids[1:]
+            # Form the segment ids
+            token_type_ids = [0] * len(tokenized_question.ids) + [1] * len(
+                tokenized_context.ids[1:]
+            )
+            ner_labels = question_ner_labels + context_ner_labels[1:]
+            # Attend to all these tokens
+            attention_mask = [1] * len(input_ids)
+        else:
+            # Keeps ids of context and drop [CLS] from question
+            # Both has [SEP] at the end which is desired
+            input_ids = tokenized_context.ids + tokenized_question.ids[1:]
+            # Form the segment ids
+            token_type_ids = [0] * len(tokenized_context.ids) + [1] * len(
+                tokenized_question.ids[1:]
+            )
+            ner_labels = context_ner_labels + question_ner_labels[1:]
+            # Attend to all these tokens
+            attention_mask = [1] * len(input_ids)
 
         # Form padding
         padding_length = MAX_SEQ_LENGTH - len(input_ids)
@@ -118,8 +131,8 @@ class Sample:
             # Avoid attending to paddings
             attention_mask = attention_mask + ([0] * padding_length)
             token_type_ids = token_type_ids + ([0] * padding_length)
-            if self.ner_labels:
-                self.ner_labels = self.ner_labels + (
+            if ner_labels:
+                ner_labels = ner_labels + (
                     [CROSS_ENTROPY_IGNORE_INDEX] * padding_length
                 )
 
@@ -128,16 +141,17 @@ class Sample:
             input_ids = input_ids[:MAX_SEQ_LENGTH]
             attention_mask = attention_mask[:MAX_SEQ_LENGTH]
             token_type_ids = token_type_ids[:MAX_SEQ_LENGTH]
-            if self.ner_labels:
-                self.ner_labels = self.ner_labels[:MAX_SEQ_LENGTH]
+            if ner_labels:
+                ner_labels = ner_labels[:MAX_SEQ_LENGTH]
 
         self.input_word_ids = input_ids
         self.input_type_ids = token_type_ids
         self.input_mask = attention_mask
         self.context_token_to_char = tokenized_context.offsets
+        self.ner_labels = ner_labels
 
 
-def create_squad_examples(raw_data, desc, tokenizer):
+def create_squad_examples(raw_data, desc, tokenizer, question_first=False):
     # TODO: Pass the tokenizer as a parameter for this function
     p_bar = tqdm(
         total=len(raw_data),
@@ -277,10 +291,10 @@ def get_persons(passage):
     return ranges
 
 
-def load_dataset_as_tensors(datafile, desc, tokenizer):
+def load_dataset_as_tensors(datafile, desc, tokenizer, question_first=False):
     with open(datafile, "r") as f:
         raw_data = [json.loads(l) for l in f]
-    squad_examples = create_squad_examples(raw_data, desc, tokenizer)
+    squad_examples = create_squad_examples(raw_data, desc, tokenizer, question_first)
     X, y = create_inputs_targets(squad_examples)
     tensor_data = TensorDataset(
         torch.tensor(X[0], dtype=torch.int64),
@@ -293,8 +307,8 @@ def load_dataset_as_tensors(datafile, desc, tokenizer):
     return tensor_data
 
 
-def load_samples_as_tensors(raw_data, desc, tokenizer):
-    squad_examples = create_squad_examples(raw_data, desc, tokenizer)
+def load_samples_as_tensors(raw_data, desc, tokenizer, question_first=False):
+    squad_examples = create_squad_examples(raw_data, desc, tokenizer, question_first)
     X, _ = create_inputs_targets(squad_examples)
     # tensor_data = TensorDataset(
     #     torch.tensor(X[0], dtype=torch.int64),
