@@ -62,6 +62,18 @@ parser.add_argument(
     action="store_true",
     help="Use the model further PT on quran.",
 )
+parser.add_argument(
+    "--embed_ner",
+    default=False,
+    action="store_true",
+    help="Embed NERs as input to BERT layers.",
+)
+parser.add_argument(
+    "--embed_question",
+    default=False,
+    action="store_true",
+    help="Embed Question type as input to BERT layers.",
+)
 parser.add_argument("--desc", required=True, help="The description of the model.")
 args = parser.parse_args()
 
@@ -80,7 +92,12 @@ with open(datafile, "r") as f:
     raw_eval_data = [json.loads(l) for l in f]
 
 # Load the trained model
-model = MultiTaskQAModel(MODEL_NAME, use_TAPT=args.use_TAPT).to(device=GPU_ID)
+model = MultiTaskQAModel(
+    MODEL_NAME,
+    use_TAPT=args.use_TAPT,
+    embed_ner=args.embed_ner,
+    embed_question=args.embed_question,
+).to(device=GPU_ID)
 model.load_state_dict(
     torch.load(f"checkpoints/weights_{args.desc}_seed_{args.seed}_{args.epoch}.pth")
 )
@@ -94,13 +111,21 @@ wrong_answers = []
 
 for i in range(0, len(raw_eval_data), 1):
     batch_data = raw_eval_data[i : i + 1]
-    (input_word_ids, input_mask, input_type_ids,) = load_samples_as_tensors(
+    (
+        input_word_ids,
+        input_mask,
+        input_type_ids,
+        question_ids,
+        ner_labels,
+    ) = load_samples_as_tensors(
         batch_data, "Loading sample", tokenizer, question_first=args.question_first
     )
     outputs = model(
         input_ids=input_word_ids.to(GPU_ID),
         attention_mask=input_mask.to(GPU_ID),
         token_type_ids=input_type_ids.to(GPU_ID),
+        question_ids=question_ids.to(GPU_ID),
+        ner_labels=ner_labels.to(GPU_ID),
     )
 
     start_logits, end_logits = outputs[1].split(1, dim=-1)

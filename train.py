@@ -68,6 +68,18 @@ if __name__ == "__main__":
         action="store_true",
         help="Use question as segment A, and passage as segment B",
     )
+    parser.add_argument(
+        "--embed_ner",
+        default=False,
+        action="store_true",
+        help="Embed NERs as input to BERT layers.",
+    )
+    parser.add_argument(
+        "--embed_question",
+        default=False,
+        action="store_true",
+        help="Embed Question type as input to BERT layers.",
+    )
     parser.add_argument("--desc", required=True, help="The description of the model.")
     args = parser.parse_args()
 
@@ -128,7 +140,11 @@ if __name__ == "__main__":
     # TODO: Continue pretraining
     # https://huggingface.co/docs/transformers/model_doc/bert#transformers.BertForPreTraining
     model = MultiTaskQAModel(
-        model_name, dropout_p=args.dropout_p, use_TAPT=args.use_TAPT
+        model_name,
+        dropout_p=args.dropout_p,
+        use_TAPT=args.use_TAPT,
+        embed_ner=args.embed_ner,
+        embed_question=args.embed_question,
     )
     model = model.to(device=GPU_ID)
 
@@ -179,6 +195,7 @@ if __name__ == "__main__":
                 input_word_ids,
                 input_mask,
                 input_type_ids,
+                question_ids,
                 start_token_idx,
                 end_token_idx,
                 ner_labels,
@@ -188,6 +205,8 @@ if __name__ == "__main__":
                 input_ids=input_word_ids,
                 attention_mask=input_mask,
                 token_type_ids=input_type_ids,
+                ner_labels=ner_labels,
+                question_ids=question_ids,
             )
             # Loss of NER
             ner_loss_fct = nn.CrossEntropyLoss(ignore_index=CROSS_ENTROPY_IGNORE_INDEX)
@@ -198,21 +217,8 @@ if __name__ == "__main__":
             start_logits = start_logits.squeeze(-1).contiguous()
             end_logits = end_logits.squeeze(-1).contiguous()
 
-            total_loss = None
-            # If we are on multi-GPU, split add a dimension
-            if len(start_token_idx.size()) > 1:
-                start_token_idx = start_token_idx.squeeze(-1)
-            if len(end_token_idx.size()) > 1:
-                end_token_idx = end_token_idx.squeeze(-1)
-            # sometimes the start/end positions are outside our model inputs, we ignore these terms
-
-            ignored_index = start_logits.size(1)
-            # print("Ignored index of cross entropy", ignored_index)
-
-            start_token_idx = start_token_idx.clamp(0, ignored_index)
-            end_token_idx = end_token_idx.clamp(0, ignored_index)
-
-            loss_fct = nn.CrossEntropyLoss(ignore_index=ignored_index)
+            # TODO: How is this loss computed?
+            loss_fct = nn.CrossEntropyLoss()
             start_loss = loss_fct(start_logits, start_token_idx)
             end_loss = loss_fct(end_logits, end_token_idx)
             total_loss = (start_loss + end_loss) / 2

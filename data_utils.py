@@ -13,6 +13,7 @@ from settings import MAX_SEQ_LENGTH, CROSS_ENTROPY_IGNORE_INDEX
 from torch import nn
 import torch
 from torch.utils.data import TensorDataset
+from utils import find_interrogative_index
 
 
 def get_ner_labels(sentence, tokens, ner_char_ranges):
@@ -42,7 +43,7 @@ class Sample:
         start_char_idx=None,
         answer_text=None,
         all_answers=None,
-        question_id=None,
+        pq_id=None,
     ):
         self.question = question
         self.context = context
@@ -52,7 +53,7 @@ class Sample:
         self.skip = False
         self.start_token_idx = -1
         self.end_token_idx = -1
-        self.question_id = question_id
+        self.pq_id = pq_id
 
     def preprocess(self, tokenizer, use_multiple_answers=False, question_first=False):
         if not tokenizer:
@@ -68,12 +69,8 @@ class Sample:
         persons_mentions_context = get_persons(context)
         persons_mentions_question = get_persons(question)
 
-        # TODO: Handle multiple answers
-        if use_multiple_answers and not self.all_answers:
-            pass
-
         # Only use the first answer
-        elif self.answer_text:
+        if self.answer_text:
             answer = self.answer_text
             # Find the end character
             end_char_idx = self.start_char_idx + len(answer)
@@ -149,6 +146,7 @@ class Sample:
         self.input_mask = attention_mask
         self.context_token_to_char = tokenized_context.offsets
         self.ner_labels = ner_labels
+        self.question_id = find_interrogative_index(question)
 
 
 def create_squad_examples(raw_data, desc, tokenizer, question_first=False):
@@ -163,15 +161,16 @@ def create_squad_examples(raw_data, desc, tokenizer, question_first=False):
     )
     squad_examples = []
     for line in raw_data:
-        question_id = line["pq_id"]
+        pq_id = line["pq_id"]
         context = line["passage"]
         question = line["question"]
         # TODO: Handle if answers aren't there
         if not line["answers"]:
-            squad_eg = Sample(question, context, question_id=question_id)
+            squad_eg = Sample(question, context, pq_id=pq_id)
             squad_eg.preprocess(tokenizer)
             squad_examples.append(squad_eg)
         else:
+            # Use different valid answers as new samples
             for cur_answer in line["answers"]:
                 all_answers = line["answers"]
                 answer_text = cur_answer["text"]
@@ -182,7 +181,7 @@ def create_squad_examples(raw_data, desc, tokenizer, question_first=False):
                     start_char_idx,
                     answer_text,
                     all_answers,
-                    question_id=question_id,
+                    pq_id=pq_id,
                 )
                 squad_eg.preprocess(tokenizer)
                 squad_examples.append(squad_eg)
@@ -199,6 +198,7 @@ def create_inputs_targets(squad_examples):
         "start_token_idx": [],
         "end_token_idx": [],
         "ner_labels": [],
+        "question_id": [],
     }
     # Form list of values from the Sample objects
     for item in squad_examples:
@@ -214,6 +214,7 @@ def create_inputs_targets(squad_examples):
         dataset_dict["input_word_ids"],
         dataset_dict["input_mask"],
         dataset_dict["input_type_ids"],
+        dataset_dict["question_id"],
     ]
     y = [
         dataset_dict["start_token_idx"],
@@ -300,6 +301,7 @@ def load_dataset_as_tensors(datafile, desc, tokenizer, question_first=False):
         torch.tensor(X[0], dtype=torch.int64),
         torch.tensor(X[1], dtype=torch.float),
         torch.tensor(X[2], dtype=torch.int64),
+        torch.tensor(X[3], dtype=torch.int64),
         torch.tensor(y[0], dtype=torch.int64),
         torch.tensor(y[1], dtype=torch.int64),
         torch.tensor(y[2], dtype=torch.int64),
@@ -309,15 +311,12 @@ def load_dataset_as_tensors(datafile, desc, tokenizer, question_first=False):
 
 def load_samples_as_tensors(raw_data, desc, tokenizer, question_first=False):
     squad_examples = create_squad_examples(raw_data, desc, tokenizer, question_first)
-    X, _ = create_inputs_targets(squad_examples)
-    # tensor_data = TensorDataset(
-    #     torch.tensor(X[0], dtype=torch.int64),
-    #     torch.tensor(X[1], dtype=torch.float),
-    #     torch.tensor(X[2], dtype=torch.int64),
-    # )
-    # return tensor_data
+    X, y = create_inputs_targets(squad_examples)
+
     return (
         torch.tensor(X[0], dtype=torch.int64),
         torch.tensor(X[1], dtype=torch.float),
         torch.tensor(X[2], dtype=torch.int64),
+        torch.tensor(X[3], dtype=torch.int64),
+        torch.tensor(y[2], dtype=torch.int64),
     )
