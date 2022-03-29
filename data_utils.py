@@ -15,6 +15,11 @@ import torch
 from torch.utils.data import TensorDataset
 from utils import find_interrogative_index
 
+from farasa.stemmer import FarasaStemmer
+from tqdm import tqdm
+
+STEMMER = FarasaStemmer(interactive=True)
+
 
 def get_ner_labels(sentence, tokens, ner_char_ranges):
     """
@@ -33,6 +38,44 @@ def get_ner_labels(sentence, tokens, ner_char_ranges):
     ]
 
     return ner_labels
+
+
+def stem_tokenize(s):
+    original_offsets, stemmed_offsets = [], []
+    stemmed_tokens = []
+    cur_token_start = 0
+    cur_length = -1
+    for i, c in tqdm(enumerate(s), total=len(s)):
+        if c in [" ", ".", "؟", '"']:
+            token = s[cur_token_start:i]
+            if token.strip():
+                stemmed_token = STEMMER.stem(token)
+                stemmed_tokens.append(stemmed_token)
+                original_offsets.append((cur_token_start, i))
+                stemmed_offsets.append(
+                    (1 + cur_length, 1 + cur_length + len(stemmed_token))
+                )
+                cur_length += len(stemmed_token) + 1
+            cur_token_start = i + 1
+
+        if c in [".", "؟", '"']:
+            token = c
+            stemmed_token = STEMMER.stem(token)
+            stemmed_tokens.append(stemmed_token)
+            original_offsets.append((i, i + 1))
+            stemmed_offsets.append(
+                (1 + cur_length, 1 + cur_length + len(stemmed_token))
+            )
+            cur_length += 2
+
+    token = s[cur_token_start:i]
+    if token.strip():
+        # Make sure the token isn't just a space
+        stemmed_token = STEMMER.stem(token)
+        stemmed_tokens.append(stemmed_token)
+        original_offsets.append((cur_token_start, i))
+        stemmed_offsets.append((1 + cur_length, 1 + cur_length + len(stemmed_token)))
+    return " ".join(stemmed_tokens), original_offsets, stemmed_offsets
 
 
 class Sample:
@@ -55,16 +98,29 @@ class Sample:
         self.end_token_idx = -1
         self.pq_id = pq_id
 
-    def preprocess(self, tokenizer, use_multiple_answers=False, question_first=False):
+    def preprocess(self, tokenizer, question_first=False, use_stemming=False):
         if not tokenizer:
             return None
 
-        context = self.context
-        question = self.question
+        context = re.sub(r"\s+", " ", self.context)
+        question = re.sub(r"\s+", " ", self.question)
+
+        if use_stemming:
+            context, original_offsets, stemmed_offsets = stem_tokenize(context)
+            question, _, _ = stem_tokenize(question)
+            # TODO: Store the offsets in order to decode the answer later
+            self.original_offsets = original_offsets
+            self.stemmed_offsets = stemmed_offsets
 
         # Tokenize the strings into subwords
         tokenized_context = tokenizer.encode(context)
         tokenized_question = tokenizer.encode(question)
+
+        if not use_stemming:
+            # Use the same offsets from the main tokenizer
+            # Ignore the [CLS] and [SEP] tokens
+            self.original_offsets = tokenized_context.offsets[1:-1]
+            self.stemmed_offsets = self.original_offsets
 
         persons_mentions_context = get_persons(context)
         persons_mentions_question = get_persons(question)
@@ -73,15 +129,31 @@ class Sample:
         if self.answer_text:
             answer = self.answer_text
             # Find the end character
+            start_char_idx = self.start_char_idx
             end_char_idx = self.start_char_idx + len(answer)
 
+            mapped_start_idx, mapped_end_idx = -1, -1
+            # These are old offsets
+            for (orig_start, orig_end), (stemmed_start, stemmed_end) in zip(
+                self.original_offsets, self.stemmed_offsets
+            ):
+                if start_char_idx >= orig_start and start_char_idx <= orig_end:
+                    # use the stemmed offset
+                    mapped_start_idx = stemmed_start
+                if end_char_idx >= orig_start and end_char_idx <= orig_end:
+                    # use the stemmed offset
+                    mapped_end_idx = stemmed_end
+
             is_char_in_ans = [0] * len(context)
-            for idx in range(self.start_char_idx, end_char_idx):
+            for idx in range(mapped_start_idx, mapped_end_idx):
                 is_char_in_ans[idx] = 1
 
             # Find subtokens having any overlap with the range of characters
             ans_token_idx = []
             for idx, (start, end) in enumerate(tokenized_context.offsets):
+                # TODO: Do I need to skip first two indecies?
+                # if idx == 0 or idx == len(tokenized_context.offsets):
+                #     continue
                 if sum(is_char_in_ans[start:end]) > 0:
                     ans_token_idx.append(idx)
 
