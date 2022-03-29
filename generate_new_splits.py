@@ -27,7 +27,7 @@ def dump_to_file(split_df, split_type, filename):
             f.write("\n")
 
 
-if __name__ == "__main__":
+def main():
     train_data = load_datafile("data/train_ar.jsonl", split="train")
     eval_data = load_datafile("data/eval_ar.jsonl", split="eval")
 
@@ -108,22 +108,35 @@ if __name__ == "__main__":
     dev_percentage = 13.3
     train_splits, dev_splits = [], []
     filenames = [
-        "non_leakage_indomain",
+        "leakage_indomain",
         "context_ood",
         "non_leakage_indomain",
         "total_ood",
     ]
     dfs = [
-        non_leakage_indomain_df,
+        leakage_indomain_df,
         context_ood_df,
         non_leakage_indomain_df,
         total_ood_df,
     ]
+    train_split_dfs = []
+    eval_split_dfs = []
     for typed_df, filename in zip(dfs[:-1], filenames[:-1]):
         t_split, d_split = get_normal_split(
             typed_df.drop(["passage_answer", "question_answer"], axis=1), dev_percentage
         )
-        dump_to_file(t_split, "train", filename)
         dump_to_file(d_split, "eval", filename)
+        train_split_dfs.append(t_split)
+        eval_split_dfs.append(d_split)
 
-    dump_to_file(dfs[-1], "eval", filenames[-1])
+    dump_to_file(pd.concat(train_split_dfs), "train", "faithful")
+    dump_to_file(pd.concat(eval_split_dfs), "eval", "faithful")
+    dump_to_file(
+        dfs[-1].drop(["passage_answer", "question_answer"], axis=1),
+        "eval",
+        filenames[-1],
+    )
+
+
+if __name__ == "__main__":
+    main()
