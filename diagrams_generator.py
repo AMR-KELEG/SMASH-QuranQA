@@ -35,19 +35,23 @@ def generate_question_type_diagram(train_df, eval_df, normalize=False):
     )
 
     fig, axes = plt.subplots(
-        nrows=2, ncols=1, sharex=False, sharey=True, figsize=(10, 8)
+        nrows=2, ncols=1, sharex=False, sharey=True, figsize=(6.3, 4)
     )
     g1 = sns.barplot(
         x="Interrogative article",
         y="Count (train)",
         data=merged_df,
         log=True,
-        color="purple",
+        color="#CBC3E3",
         ax=axes[0],
     )
 
     g2 = sns.barplot(
-        x="Interrogative article", y="Count (dev)", data=merged_df, ax=axes[1]
+        x="Interrogative article",
+        y="Count (dev)",
+        data=merged_df,
+        color="#CBC3E3",
+        ax=axes[1],
     )
 
     return fig

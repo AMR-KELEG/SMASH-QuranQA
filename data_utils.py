@@ -233,6 +233,7 @@ def normalize_text(text):
 def download_dataset():
     train_data_file = "https://gitlab.com/bigirqu/quranqa/-/raw/main/datasets/qrcd_v1.1_train.jsonl?inline=false"
     dev_data_file = "https://gitlab.com/bigirqu/quranqa/-/raw/main/datasets/qrcd_v1.1_dev.jsonl?inline=false"
+    test_data_file = "https://gitlab.com/bigirqu/quranqa/-/raw/main/datasets/qrcd_v1.1_test_noAnswers.jsonl"
     train_data = requests.get(train_data_file)
     if train_data.status_code in (200,):
         with open("data/train_ar.jsonl", "wb") as train_file:
@@ -241,6 +242,10 @@ def download_dataset():
     if eval_data.status_code in (200,):
         with open("data/eval_ar.jsonl", "wb") as eval_file:
             eval_file.write(eval_data.content)
+    test_data = requests.get(test_data_file)
+    if test_data.status_code in (200,):
+        with open("data/test_ar.jsonl", "wb") as test_file:
+            test_file.write(test_data.content)
 
 
 def get_persons(passage):
