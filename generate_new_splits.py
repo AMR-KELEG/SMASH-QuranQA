@@ -121,7 +121,17 @@ def main():
     ]
     train_split_dfs = []
     eval_split_dfs = []
-    for typed_df, filename in zip(dfs[:-1], filenames[:-1]):
+
+    # Show model one version of a repeated question to avoid overfitting!
+    t_split_leakage = leakage_indomain_df.drop_duplicates(
+        subset=["question_answer"]
+    ).drop_duplicates(subset=["passage_answer"])
+    # Use all remaining repeated questions in the development dataset
+    d_split_leakage = leakage_indomain_df.drop(index=t_split_leakage.index)
+    train_split_dfs.append(t_split_leakage)
+    eval_split_dfs.append(d_split_leakage)
+
+    for typed_df, filename in zip(dfs[1:-1], filenames[1:-1]):
         t_split, d_split = get_normal_split(
             typed_df.drop(["passage_answer", "question_answer"], axis=1), dev_percentage
         )
