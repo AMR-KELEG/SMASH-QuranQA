@@ -3,10 +3,6 @@ import os
 import re
 import sys
 
-# TODO: Fix this!
-sys.path.append("../")
-sys.path.append("../quranqa/code/")
-
 import numpy as np
 from colorama import Fore
 from tokenizers import BertWordPieceTokenizer
@@ -20,7 +16,7 @@ from data_utils import (
     load_dataset_as_tensors,
     load_samples_as_tensors,
 )
-from quranqa.code.quranqa22_eval import (
+from quranqa22_eval import (
     normalize_text,
     remove_prefixes,
     pRR_max_over_ground_truths,

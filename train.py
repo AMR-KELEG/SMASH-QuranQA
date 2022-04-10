@@ -33,14 +33,6 @@ from settings import (
 import logging
 from model import MultiTaskQAModel
 
-# TODO: Fix this!
-sys.path.append("../")
-sys.path.append("../quranqa/code/")
-
-from quranqa.code.quranqa22_eval import (
-    pRR_max_over_ground_truths,
-)
-
 from generate_new_splits import main as generate_faithful_splits
 from glob import glob
 from utils import mask_passage
