@@ -12,11 +12,11 @@ import numpy as np
 from settings import MAX_SEQ_LENGTH, CROSS_ENTROPY_IGNORE_INDEX
 from torch import nn
 import torch
-from torch.utils.data import TensorDataset
+from torch.utils.data import TensorDataset, DataLoader, SequentialSampler
 from utils import find_interrogative_index
 
+
 from farasa.stemmer import FarasaStemmer
-from tqdm import tqdm
 
 STEMMER = FarasaStemmer(interactive=True)
 
@@ -45,7 +45,7 @@ def stem_tokenize(s):
     stemmed_tokens = []
     cur_token_start = 0
     cur_length = -1
-    for i, c in tqdm(enumerate(s), total=len(s)):
+    for i, c in enumerate(s):
         if c in [" ", ".", "؟", '"']:
             token = s[cur_token_start:i]
             if token.strip():
@@ -221,7 +221,9 @@ class Sample:
         self.question_id = find_interrogative_index(question)
 
 
-def create_squad_examples(raw_data, desc, tokenizer, question_first=False):
+def create_squad_examples(
+    raw_data, desc, tokenizer, question_first=False, use_stemming=False
+):
     # TODO: Pass the tokenizer as a parameter for this function
     p_bar = tqdm(
         total=len(raw_data),
@@ -239,7 +241,9 @@ def create_squad_examples(raw_data, desc, tokenizer, question_first=False):
         # TODO: Handle if answers aren't there
         if not line["answers"]:
             squad_eg = Sample(question, context, pq_id=pq_id)
-            squad_eg.preprocess(tokenizer)
+            squad_eg.preprocess(
+                tokenizer, question_first=question_first, use_stemming=use_stemming
+            )
             squad_examples.append(squad_eg)
         else:
             # Use different valid answers as new samples
@@ -255,7 +259,9 @@ def create_squad_examples(raw_data, desc, tokenizer, question_first=False):
                     all_answers,
                     pq_id=pq_id,
                 )
-                squad_eg.preprocess(tokenizer)
+                squad_eg.preprocess(
+                    tokenizer, question_first=question_first, use_stemming=use_stemming
+                )
                 squad_examples.append(squad_eg)
         p_bar.update(1)
     p_bar.close()
@@ -369,10 +375,18 @@ def get_persons(passage):
     return ranges
 
 
-def load_dataset_as_tensors(datafile, desc, tokenizer, question_first=False):
+def load_dataset_as_tensors(
+    datafile, desc, tokenizer, question_first=False, use_stemming=False
+):
     with open(datafile, "r") as f:
         raw_data = [json.loads(l) for l in f]
-    squad_examples = create_squad_examples(raw_data, desc, tokenizer, question_first)
+    squad_examples = create_squad_examples(
+        raw_data,
+        desc,
+        tokenizer,
+        question_first=question_first,
+        use_stemming=use_stemming,
+    )
     X, y = create_inputs_targets(squad_examples)
     tensor_data = TensorDataset(
         torch.tensor(X[0], dtype=torch.int64),
@@ -386,8 +400,16 @@ def load_dataset_as_tensors(datafile, desc, tokenizer, question_first=False):
     return tensor_data
 
 
-def load_samples_as_tensors(raw_data, desc, tokenizer, question_first=False):
-    squad_examples = create_squad_examples(raw_data, desc, tokenizer, question_first)
+def load_samples_as_tensors(
+    raw_data, desc, tokenizer, question_first=False, use_stemming=False
+):
+    squad_examples = create_squad_examples(
+        raw_data,
+        desc,
+        tokenizer,
+        question_first=question_first,
+        use_stemming=use_stemming,
+    )
     X, y = create_inputs_targets(squad_examples)
 
     return (
@@ -397,3 +419,26 @@ def load_samples_as_tensors(raw_data, desc, tokenizer, question_first=False):
         torch.tensor(X[3], dtype=torch.int64),
         torch.tensor(y[2], dtype=torch.int64),
     )
+
+
+def load_eval_dataset(filename, tokenizer, question_first, use_stemming):
+    eval_data = load_dataset_as_tensors(
+        filename,
+        "Creating eval points",
+        tokenizer,
+        question_first=question_first,
+        use_stemming=use_stemming,
+    )
+    with open(filename, "r") as f:
+        raw_eval_data = [json.loads(l) for l in f]
+    eval_squad_examples = create_squad_examples(
+        raw_eval_data,
+        "",
+        tokenizer,
+        question_first=question_first,
+        use_stemming=use_stemming,
+    )
+    print(f"{len(eval_data)} evaluation points created.")
+    eval_sampler = SequentialSampler(eval_data)
+    validation_data_loader = DataLoader(eval_data, sampler=eval_sampler, batch_size=1)
+    return eval_squad_examples, validation_data_loader

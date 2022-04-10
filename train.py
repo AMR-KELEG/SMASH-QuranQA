@@ -21,13 +21,14 @@ from data_utils import (
     normalize_text,
     download_dataset,
     load_dataset_as_tensors,
+    load_eval_dataset,
 )
+from eval_utils import evaluate_model
 from settings import (
     GPU_ID,
     EPOCHS,
     BATCH_SIZE,
     CROSS_ENTROPY_IGNORE_INDEX,
-    MODEL_NAME,
 )
 import logging
 from model import MultiTaskQAModel
@@ -43,129 +44,6 @@ from quranqa.code.quranqa22_eval import (
 from generate_new_splits import main as generate_faithful_splits
 from glob import glob
 from utils import mask_passage
-
-
-def evaluate_model(
-    eval_squad_examples, validation_data_loader, eval_step, dataset_name
-):
-    # Global variables: model,
-    # Run validation
-    validation_pbar = tqdm(
-        total=len(eval_squad_examples),
-        position=0,
-        leave=True,
-        file=sys.stdout,
-        bar_format="{l_bar}%s{bar}%s{r_bar}" % (Fore.BLUE, Fore.RESET),
-    )
-    model.eval()
-    # TODO: Fix this!
-    currentIdx = 0
-
-    count = 0
-    all_pRRs = []
-    for batch in validation_data_loader:
-        batch = tuple(t.to(GPU_ID) for t in batch)
-        (
-            input_word_ids,
-            input_mask,
-            input_type_ids,
-            question_ids,
-            start_token_idx,
-            end_token_idx,
-            ner_labels,
-        ) = batch
-        with torch.no_grad():
-            outputs = model(
-                input_ids=input_word_ids,
-                attention_mask=input_mask,
-                token_type_ids=input_type_ids,
-                ner_labels=ner_labels,
-                question_ids=question_ids,
-            )
-
-            start_logits, end_logits = outputs[1].split(1, dim=-1)
-            start_logits = start_logits.squeeze(-1).contiguous()
-            end_logits = end_logits.squeeze(-1).contiguous()
-
-            loss_fct = nn.CrossEntropyLoss(ignore_index=CROSS_ENTROPY_IGNORE_INDEX)
-            start_loss = loss_fct(start_logits, start_token_idx)
-            end_loss = loss_fct(end_logits, end_token_idx)
-            total_loss = (start_loss + end_loss) / 2
-            writer.add_scalar(
-                f"Evaluation loss ({dataset_name}) /QA", total_loss.item(), eval_step
-            )
-            if USE_MULTITASK:
-                ner_loss_fct = nn.CrossEntropyLoss(
-                    ignore_index=CROSS_ENTROPY_IGNORE_INDEX
-                )
-                ner_loss = ner_loss_fct(outputs[2].view(-1, 2), ner_labels.view(-1))
-                writer.add_scalar(
-                    f"Evaluation loss ({dataset_name}) /NER", ner_loss.item(), eval_step
-                )
-
-            pred_start, pred_end = (
-                start_logits.detach().cpu().numpy(),
-                end_logits.detach().cpu().numpy(),
-            )
-
-        # TODO: Refactor this!
-        # Compute evaluation metrics (e.g.: EM)
-        pRRs = []
-        for idx, (start, end) in enumerate(zip(pred_start, pred_end)):
-            qa_sample = eval_squad_examples[currentIdx]
-            currentIdx += 1
-            offsets = qa_sample.context_token_to_char
-            start = np.argmax(start)
-            end = np.argmax(end)
-            if start >= len(offsets):
-                # TODO: There is a problem here?!
-                pRRs.append(0)
-                continue
-            pred_char_start = offsets[start][0]
-            if end < len(offsets):
-                pred_char_end = offsets[end][1]
-                pred_ans = qa_sample.context[pred_char_start:pred_char_end]
-            else:
-                pred_ans = qa_sample.context[pred_char_start:]
-
-            # TODO: Compute the right metrics
-            pRR = pRR_max_over_ground_truths(
-                [pred_ans],
-                [[0]],
-                [{"text": a["text"]} for a in qa_sample.all_answers],
-            )
-            pRRs.append(pRR)
-
-            normalized_pred_ans = normalize_text(pred_ans)
-            normalized_true_ans = [
-                normalize_text(_["text"]) for _ in qa_sample.all_answers
-            ]
-            # Change the EM to use the repo's code!
-            if normalized_pred_ans in normalized_true_ans:
-                count += 1
-        all_pRRs += pRRs
-        validation_pbar.update(input_word_ids.size(0))
-    acc = count / len(eval_squad_examples)
-    validation_pbar.close()
-    avg_pRR = sum(all_pRRs) / len(all_pRRs)
-    writer.add_scalar(f"Evaluation pRR ({dataset_name})", avg_pRR, eval_step)
-    return {"EM": acc, "pRR": avg_pRR}
-
-
-def load_eval_dataset(filename):
-    eval_data = load_dataset_as_tensors(
-        filename, "Creating eval points", tokenizer, args.question_first
-    )
-    with open(filename, "r") as f:
-        raw_eval_data = [json.loads(l) for l in f]
-    eval_squad_examples = create_squad_examples(
-        raw_eval_data, "", tokenizer, args.question_first
-    )
-    print(f"{len(eval_data)} evaluation points created.")
-    eval_sampler = SequentialSampler(eval_data)
-    validation_data_loader = DataLoader(eval_data, sampler=eval_sampler, batch_size=1)
-    return eval_squad_examples, validation_data_loader
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train BERT on QA.")
@@ -191,6 +69,7 @@ if __name__ == "__main__":
         default=0,
         help="The value of the dropout probability after BERT.",
     )
+    # TODO: There is a bug in the implementation of this feature
     parser.add_argument(
         "--question_first",
         default=False,
@@ -221,6 +100,17 @@ if __name__ == "__main__":
         action="store_true",
         help="Mask part of the input to avoid overfitting.",
     )
+    parser.add_argument(
+        "--use_stemming",
+        default=False,
+        action="store_true",
+        help="Stem the tokens before feeding them into the model.",
+    )
+    parser.add_argument(
+        "--model_name",
+        default="CAMeL-Lab/bert-base-arabic-camelbert-ca",
+        help="The name of the BERT model to fine-tune.",
+    )
     parser.add_argument("--desc", required=True, help="The description of the model.")
     args = parser.parse_args()
     USE_MULTITASK = args.use_ner_multitasking
@@ -228,10 +118,10 @@ if __name__ == "__main__":
     # Try setting the seed
     torch.manual_seed(args.seed)
 
-    writer = SummaryWriter(log_dir="training_logs")
+    writer = SummaryWriter(log_dir=f"training_logs/{args.desc}_seed_{args.seed}")
     # writer.add_scalar('Loss/train', np.random.random(), global_step=n_iter)
 
-    model_name = MODEL_NAME
+    model_name = args.model_name
     # Use the model that was fine-tuned for NER
     if args.ner:
         model_name = model_name + "-ner"
@@ -261,7 +151,8 @@ if __name__ == "__main__":
         "data/faithful_train.jsonl",
         "Creating training points",
         tokenizer,
-        args.question_first,
+        question_first=args.question_first,
+        use_stemming=args.use_stemming,
     )
 
     eval_dataset_filenames = sorted(glob("data/*_eval.jsonl"))
@@ -270,7 +161,10 @@ if __name__ == "__main__":
     for dataset_filename in eval_dataset_filenames:
         dataset_name = re.sub(r"_eval[.]jsonl", "", dataset_filename.split("/")[-1])
         eval_squad_examples, validation_data_loader = load_eval_dataset(
-            dataset_filename
+            dataset_filename,
+            tokenizer,
+            question_first=args.question_first,
+            use_stemming=args.use_stemming,
         )
         eval_datasets.append(
             {
@@ -280,9 +174,6 @@ if __name__ == "__main__":
             }
         )
 
-    dataset_name = "eval"
-    dataset_filename = "data/faithful_eval.jsonl "
-    eval_squad_examples, validation_data_loader = load_eval_dataset(dataset_filename)
     eval_datasets.append(
         {
             "name": dataset_name,
@@ -292,7 +183,10 @@ if __name__ == "__main__":
     )
 
     train_squad_examples, train_data_loader = load_eval_dataset(
-        "data/faithful_train.jsonl"
+        "data/faithful_train.jsonl",
+        tokenizer,
+        question_first=args.question_first,
+        use_stemming=args.use_stemming,
     )
     train_datasets.append(
         {
@@ -359,7 +253,6 @@ if __name__ == "__main__":
         )
         model.train()
         tr_loss = 0
-        print(f"Epoch {epoch}, masking percentage {initial_masking_percentage:.6f}")
 
         # Train the model using batches of data
         for step, batch in enumerate(train_data_loader):
@@ -375,10 +268,13 @@ if __name__ == "__main__":
             ) = batch
             # Mask some of the input
             if args.use_masking:
-                if epoch >= EPOCHS - 2:
-                    masking_percentage = initial_masking_percentage / (epoch + 1)
+                if epoch <= EPOCHS - 2:
+                    masking_percentage = initial_masking_percentage / (epoch)
                 else:
-                    masking_percentage = initial_masking_percentage ** (epochs + 1)
+                    masking_percentage = initial_masking_percentage ** (epoch)
+
+                if step == 0:
+                    print(f"Epoch {epoch}, masking percentage {masking_percentage:.6f}")
                 input_ids = mask_passage(
                     input_word_ids, slow_tokenizer, masking_percentage
                 )
@@ -434,10 +330,13 @@ if __name__ == "__main__":
 
         dataset_name = "train"
         eval_results = evaluate_model(
+            model,
             train_datasets[0]["samples"],
             train_datasets[0]["dataloader"],
             eval_steps[dataset_name],
             dataset_name,
+            args,
+            writer=writer,
         )
         eval_steps[dataset_name] = eval_steps[dataset_name] + 1
         print(
@@ -448,10 +347,13 @@ if __name__ == "__main__":
         for evaluation_dataset_dict in eval_datasets:
             dataset_name = evaluation_dataset_dict["name"]
             eval_results = evaluate_model(
+                model,
                 evaluation_dataset_dict["samples"],
                 evaluation_dataset_dict["dataloader"],
                 eval_steps[dataset_name],
                 dataset_name,
+                args,
+                writer=writer,
             )
             eval_steps[dataset_name] = eval_steps[dataset_name] + 1
 

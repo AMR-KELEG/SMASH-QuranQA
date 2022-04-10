@@ -13,7 +13,7 @@ from tokenizers import BertWordPieceTokenizer
 from tqdm import tqdm
 import torch
 from torch.utils.data import DataLoader, SequentialSampler
-from settings import GPU_ID, MODEL_NAME, EPOCHS
+from settings import GPU_ID, EPOCHS
 from data_utils import (
     create_squad_examples,
     create_inputs_targets,
@@ -74,8 +74,26 @@ parser.add_argument(
     action="store_true",
     help="Embed Question type as input to BERT layers.",
 )
+parser.add_argument(
+    "--model_name",
+    default="CAMeL-Lab/bert-base-arabic-camelbert-ca",
+    help="The name of the BERT model to fine-tune.",
+)
+parser.add_argument(
+    "--use_stemming",
+    default=False,
+    action="store_true",
+    help="Stem the tokens before feeding them into the model.",
+)
+parser.add_argument(
+    "--run_id",
+    default="1",
+    help="An integer for the run id.",
+)
+
 parser.add_argument("--desc", required=True, help="The description of the model.")
 args = parser.parse_args()
+MODEL_NAME = args.model_name
 
 if args.test:
     datafile = "data/test.jsonl"
@@ -118,7 +136,11 @@ for i in range(0, len(raw_eval_data), 1):
         question_ids,
         ner_labels,
     ) = load_samples_as_tensors(
-        batch_data, "Loading sample", tokenizer, question_first=args.question_first
+        batch_data,
+        "Loading sample",
+        tokenizer,
+        question_first=args.question_first,
+        use_stemming=args.use_stemming,
     )
     outputs = model(
         input_ids=input_word_ids.to(GPU_ID),
@@ -138,7 +160,11 @@ for i in range(0, len(raw_eval_data), 1):
     )
 
     test_sample = create_squad_examples(
-        batch_data, "Sample", tokenizer, question_first=args.question_first
+        batch_data,
+        "Sample",
+        tokenizer,
+        question_first=args.question_first,
+        use_stemming=args.use_stemming,
     )[0]
     try:
         offsets = test_sample.context_token_to_char
@@ -147,10 +173,9 @@ for i in range(0, len(raw_eval_data), 1):
         # Investigate the reason for this!
         offsets = []
 
+    pred_answers = []
     start = np.argmax(pred_start)
     end = np.argmax(pred_end)
-
-    # Placeholder for strange start indecies
     if start >= len(offsets):
         print("Fallback for start!")
         start = 0
@@ -160,12 +185,28 @@ for i in range(0, len(raw_eval_data), 1):
         pred_ans = test_sample.context[pred_char_start : offsets[end][1]]
     else:
         pred_ans = test_sample.context[pred_char_start:]
+    pred_answers.append(pred_ans)
+    pred_answers.append(test_sample.context)
+
+    # Find most probable spans!
+    # spans = get_spans(pred_start, pred_end)
+    # for p, start, end in spans:
+    #     if start >= len(offsets):
+    #         print("Fallback for start!")
+    #         start = 0
+
+    #     pred_char_start = offsets[start][0]
+    #     if end < len(offsets) and end >= start:
+    #         pred_ans = test_sample.context[pred_char_start : offsets[end][1]]
+    #     else:
+    #         pred_ans = test_sample.context[pred_char_start:]
+    #     pred_answers.append(pred_ans)
 
     # Compute pRR stats if answers are there
     if test_sample.all_answers:
         prr = pRR_max_over_ground_truths(
-            [pred_ans, test_sample.context],
-            [[pred_char_start], [0]],
+            pred_answers,
+            [[0] for _ in range(0, len(pred_answers))],
             [{"text": a["text"]} for a in test_sample.all_answers],
         )
         # TODO: Get rid of this part
@@ -183,28 +224,28 @@ for i in range(0, len(raw_eval_data), 1):
                 }
             )
 
-            wrong_answers = sorted(wrong_answers, key=lambda d: d["type"])
-
-            for k, v in groupby(wrong_answers, key=lambda a: a["type"]):
-                typed_wrong_answers = sorted(list(v), key=lambda a: a["pRR"])
-                print(40 * "*")
-                print(k, len(typed_wrong_answers))
-                print(40 * "*")
-                print(
-                    round(np.mean([a["pRR"] for a in typed_wrong_answers]), 2),
-                    "±",
-                    round(np.std([a["pRR"] for a in typed_wrong_answers]), 2),
-                )
-
     else:
         # Just a placeholder for values!
         prr = 0
 
-    answers.append(pred_ans)
-    ids.append(test_sample.question_id)
+    answers.append(pred_answers)
+    ids.append(test_sample.pq_id)
     full_text_answers.append(test_sample.context)
     prrs.append(prr)
 
+if wrong_answers:
+    wrong_answers = sorted(wrong_answers, key=lambda d: d["type"])
+
+    for k, v in groupby(wrong_answers, key=lambda a: a["type"]):
+        typed_wrong_answers = sorted(list(v), key=lambda a: a["pRR"])
+        print(40 * "*")
+        print(k, len(typed_wrong_answers))
+        print(40 * "*")
+        print(
+            round(np.mean([a["pRR"] for a in typed_wrong_answers]), 2),
+            "±",
+            round(np.std([a["pRR"] for a in typed_wrong_answers]), 2),
+        )
 
 if False and input("print questions? [y]/n: ") != "n":
     for k, v in groupby(wrong_answers, key=lambda a: a["type"]):
@@ -220,13 +261,13 @@ if False and input("print questions? [y]/n: ") != "n":
             print(wrong_answer["type"])
             print()
 
-with open("data/smash_run01.json", "w") as f:
+with open(f"data/SMASH_run0{args.run_id}.json", "w") as f:
     submission = {
         id: [
-            {"answer": answer, "rank": 1, "score": 0.99},
-            {"answer": full_answer, "rank": 2, "score": 0.01},
+            {"answer": a, "rank": i + 1, "score": round(1/len(answers_list), 2)}
+            for i, a in enumerate(answers_list)
         ]
-        for id, answer, full_answer in zip(ids, answers, full_text_answers)
+        for id, answers_list, full_answer in zip(ids, answers, full_text_answers)
     }
     json.dump(submission, f, ensure_ascii=False)
 

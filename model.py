@@ -14,7 +14,7 @@ from utils import INTERROGATIVE_ARTICLES
 class MultiTaskQAModel(nn.Module):
     def __init__(
         self,
-        model_name=MODEL_NAME,
+        model_name,
         dropout_p=0.5,
         use_TAPT=False,
         embed_ner=False,
