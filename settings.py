@@ -1,6 +1,6 @@
 import torch
 
-GPU_ID = torch.device("cuda:3")
+GPU_ID = "cpu" # Set it to an ID of a GPU for GPU training: torch.device("cuda:3")
 MAX_SEQ_LENGTH = 512
 BATCH_SIZE = 16
 EPOCHS = 16
