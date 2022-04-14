@@ -8,6 +8,9 @@ conda env create --file environment.yml
 # Activate the conda environment
 conda activate quran_qa
 
+# Modify the settings.py file
+# Set the `GPU_ID` to "cpu" if you want to use cpu or to the id of the GPU you want to use.
+
 # Parse entities from Wikipedia HTML tables
 python parse_quran_named_entities_from_wikipedia.py
 
