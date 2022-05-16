@@ -130,11 +130,14 @@ def main():
     d_split_leakage = leakage_indomain_df.drop(index=t_split_leakage.index)
     train_split_dfs.append(t_split_leakage)
     eval_split_dfs.append(d_split_leakage)
+    dump_to_file(t_split_leakage, "train", filenames[0])
+    dump_to_file(d_split_leakage, "eval", filenames[0])
 
     for typed_df, filename in zip(dfs[1:-1], filenames[1:-1]):
         t_split, d_split = get_normal_split(
             typed_df.drop(["passage_answer", "question_answer"], axis=1), dev_percentage
         )
+        dump_to_file(t_split, "train", filename)
         dump_to_file(d_split, "eval", filename)
         train_split_dfs.append(t_split)
         eval_split_dfs.append(d_split)
