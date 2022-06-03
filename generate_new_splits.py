@@ -3,6 +3,9 @@
 
 import json
 import pandas as pd
+from data_utils import (
+    download_dataset,
+)
 
 
 def load_datafile(filename, split):
@@ -108,10 +111,10 @@ def main():
     dev_percentage = 13.3
     train_splits, dev_splits = [], []
     filenames = [
-        "leakage_indomain",
-        "context_ood",
-        "non_leakage_indomain",
-        "total_ood",
+        "D1_in_leakage",
+        "D4_ood_easy",
+        "D2_in_no_leakage",
+        "D3_ood_hard",
     ]
     dfs = [
         leakage_indomain_df,
@@ -152,4 +155,5 @@ def main():
 
 
 if __name__ == "__main__":
+    download_dataset()
     main()
